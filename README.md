@@ -1,13 +1,13 @@
 # Oratan-recomp
 
 A native PC version of **Cyber Troopers Virtual-On Oratorio Tangram
-M.S.B.S. Ver.5.66**, made by recompiling the 2009 Xbox Live Arcade release.
-It is not an emulator: the game's code was translated into a regular Windows
-program.
+M.S.B.S. Ver.5.66**, made by recompiling the 2009 Xbox Live Arcade release with ReXGlue, adding enhanced features like higher resolutions and split-screen multi-player. 
 
 > [!NOTE]
 > Alpha. The game is playable from start to finish. Please
 > [report bugs](https://github.com/kitaaaaaa/Oratan-recomp/issues).
+
+>[WARNING: THIS VERSION IS NOT A SIMULATORY SYSTEM - ALL REGISTERED USER DATA WILL BE TRANSMITTED TO THE DEPLOYED VIRTUAROID SYSTEM MEMORY BANK]
 
 ## How to play
 
