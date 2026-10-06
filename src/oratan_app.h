@@ -71,9 +71,10 @@ class OratanApp : public rex::ReXApp {
         options_.reset();
       } else {
         options_ = std::make_unique<oratan::OptionsDialog>(drawer, config_path_, [this] {
-          // Settings are already saved; start a fresh copy, then quit this one
-          // (deferred, so the Options window is not torn down mid-draw).
-          if (oratan::LaunchNewInstance()) app_context().RequestDeferredQuit();
+          // Settings are already saved; start a fresh copy, then close this
+          // one the same way the window's X button does (a direct app quit
+          // leaves the process hung while the game is running).
+          if (oratan::LaunchNewInstance() && window()) window()->RequestClose();
         });
       }
     });

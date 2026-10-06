@@ -1,7 +1,8 @@
 // In-game Options window (F1): player-facing settings, saved to the config
 // file. The SDK's F4 overlay edits every cvar, including ones that break the
 // game (e.g. its "vsync", which is really the console's 60 Hz timer); this
-// one only offers safe choices.
+// one only offers safe choices. VSync here is the display sync added by
+// sdk-patches/0001-present-vsync.patch.
 
 #pragma once
 

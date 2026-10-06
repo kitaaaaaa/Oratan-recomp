@@ -36,7 +36,7 @@ Already-extracted files (`default.xex` and the `media` folder) work too.
 ### Controls
 
 - Xbox controllers work as on the console.
-- **F1** opens Options (resolution, fullscreen).
+- **F1** opens Options (resolution, VSync, fullscreen).
 - **Alt+Enter** switches between fullscreen and a window. To move the game to
   another monitor: Alt+Enter, drag the window over, Alt+Enter again. The
   choice is remembered.
@@ -59,8 +59,9 @@ Only needed if you want to work on the project.
 1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/)
    with **Desktop development with C++**, plus [LLVM/Clang 20+](https://github.com/llvm/llvm-project/releases),
    [CMake 3.25+](https://cmake.org/download/) and Ninja, and unzip the
-   [ReXGlue SDK v0.10.0](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0)
-   (`rexglue-sdk-0.10.0-win-amd64.zip`).
+   ReXGlue SDK v0.10.0 built from source with the patches in
+   [sdk-patches/](sdk-patches/README.md) (the stock prebuilt SDK also works,
+   minus the VSync option).
 2. Put your game files in `assets/`.
 3. Configure and build (the first build recompiles the game, which takes a few minutes):
    ```

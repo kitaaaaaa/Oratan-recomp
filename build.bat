@@ -18,6 +18,8 @@ set "PRESET=win-amd64-%CONFIG%"
 
 if exist "%ROOT%..\tools\llvm\bin\clang.exe" set "PATH=%ROOT%..\tools\llvm\bin;%PATH%"
 if exist "%ROOT%..\tools\cmake\bin\cmake.exe" set "PATH=%ROOT%..\tools\cmake\bin;%PATH%"
+rem Prefer the SDK built from source with sdk-patches\ applied.
+if "%REXSDK%"=="" if exist "%ROOT%..\tools\rexsdk-custom" set "REXSDK=%ROOT%..\tools\rexsdk-custom"
 if "%REXSDK%"=="" if exist "%ROOT%..\tools\rexsdk\win-amd64" set "REXSDK=%ROOT%..\tools\rexsdk\win-amd64"
 
 rem Load the MSVC environment (headers/libs for clang's MSVC target).

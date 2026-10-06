@@ -83,6 +83,12 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     Save();
   }
 
+  bool vsync = rex::cvar::Query<bool>("present_vsync");
+  if (ImGui::Checkbox("VSync", &vsync)) {
+    rex::cvar::SetFlagByName("present_vsync", vsync ? "true" : "false");
+    Save();
+  }
+
   ImGui::Separator();
   ImGui::TextDisabled("Settings are saved automatically.");
   ImGui::End();

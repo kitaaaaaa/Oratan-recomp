@@ -13,8 +13,16 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <string>
+
+#include <fmt/format.h>
+
+#include <windows.h>
 
 REXCVAR_DEFINE_BOOL(log_fps, true, "Oratan", "Write the game's frame rate to the log every 5 seconds");
+REXCVAR_DEFINE_INT32(log_present_stack, 0, "Oratan",
+                     "Developer: log the guest call stack of the next N presented frames");
 
 REX_EXTERN(__imp__sub_822D3180);
 
@@ -49,9 +57,44 @@ void OnFrame() {
   g_worst_ms = 0.0;
 }
 
+// True if the guest word at `addr` is backed by committed, readable memory
+// (the top of a stack's back-chain can point anywhere).
+bool IsReadable(const uint8_t* base, uint32_t addr) {
+  MEMORY_BASIC_INFORMATION info;
+  if (!VirtualQuery(base + addr, &info, sizeof(info))) return false;
+  constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                              PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE;
+  return info.State == MEM_COMMIT && (info.Protect & kReadable) && !(info.Protect & PAGE_GUARD);
+}
+
+uint32_t LoadGuest32(const uint8_t* base, uint32_t addr) {
+  uint32_t v;
+  std::memcpy(&v, base + addr, 4);
+  return __builtin_bswap32(v);
+}
+
+// Walks the PPC stack back-chain: each frame's first word is the caller's r1,
+// and MSVC-360 prologues save LR at -8 from the caller's r1.
+void LogGuestStack(const PPCContext& ctx, const uint8_t* base) {
+  std::string out = fmt::format("present stack: lr={:08X}", uint32_t(ctx.lr));
+  uint32_t sp = ctx.r1.u32;
+  for (int depth = 0; depth < 24 && sp; ++depth) {
+    if (!IsReadable(base, sp)) break;
+    const uint32_t caller_sp = LoadGuest32(base, sp);
+    if (caller_sp <= sp || caller_sp - sp > 0x100000 || !IsReadable(base, caller_sp - 8)) break;
+    out += fmt::format(" <- {:08X}", LoadGuest32(base, caller_sp - 8));
+    sp = caller_sp;
+  }
+  REXLOG_INFO("{}", out);
+}
+
 }  // namespace
 
 REX_HOOK_RAW(sub_822D3180) {
   if (REXCVAR_GET(log_fps)) OnFrame();
+  if (int n = REXCVAR_GET(log_present_stack); n > 0) {
+    LogGuestStack(ctx, base);
+    rex::cvar::SetFlagByName("log_present_stack", std::to_string(n - 1));
+  }
   __imp__sub_822D3180(ctx, base);
 }
