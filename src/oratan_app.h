@@ -7,50 +7,43 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
-#include <rex/system.h>
 #include <rex/ui/window.h>
 
 #include <cstdlib>
-#include <filesystem>
 #include <string>
 
+#include "branding.h"
 #include "debug_tools.h"
+#include "fullscreen_toggle.h"
+#include "game_files.h"
 
 class OratanApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
 
+  // The app name is the folder in Documents that holds settings and saves,
+  // and the title of error dialogs.
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<OratanApp>(new OratanApp(ctx, "oratan",
+    return std::unique_ptr<OratanApp>(new OratanApp(ctx, oratan::kAppTitle,
         PPCImageConfig));
   }
 
-  // Boot defaults. These run before the user's oratan.toml is loaded, so
+  // Boot defaults. These run before the user's config file is loaded, so
   // anything set there still wins.
   void OnConfigurePaths(rex::PathConfig& paths) override {
-    // No --game_data_root: look for the game files so double-clicking the
-    // exe just works. Checks "assets" next to the exe, then the repo's
-    // assets folder (the exe builds to out/build/<preset>/).
+    // No --game_data_root: find the game files (extracted, or the raw XBLA
+    // package, which is unpacked on first launch) so double-clicking works.
     if (paths.game_data_root.empty()) {
-      const auto exe_dir = rex::filesystem::GetExecutableFolder();
-      for (const auto& dir : {exe_dir / "assets", exe_dir / ".." / ".." / ".." / "assets"}) {
-        if (std::filesystem::exists(dir / "default.xex")) {
-          paths.game_data_root = std::filesystem::weakly_canonical(dir);
-          break;
-        }
-      }
+      std::string error;
+      paths.game_data_root =
+          oratan::LocateGameFiles(rex::filesystem::GetExecutableFolder(), &error);
       if (paths.game_data_root.empty()) {
-        rex::ShowSimpleMessageBox(
-            rex::SimpleMessageBoxType::Error,
-            std::string("Virtual-On OT game files not found.\n\n"
-                        "Copy your extracted copy of the game (default.xex and "
-                        "the media folder) into:\n\n") +
-                (exe_dir / "assets").string() +
-                "\n\nSee \"HOW TO ADD THE GAME.txt\" in that folder.");
+        oratan::ShowError(error);
         std::exit(1);
       }
     }
+    config_path_ = paths.config_path;
     // XBLA titles run as the trial unless the full-game license bit is set.
     rex::cvar::SetFlagByName("license_mask", "1");
   }
@@ -67,6 +60,14 @@ class OratanApp : public rex::ReXApp {
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     (void)drawer;
-    if (window()) window()->SetTitle("Virtual-On Oratorio Tangram");
+    if (!window()) return;
+    window()->SetTitle(oratan::kWindowTitle);
+    fullscreen_toggle_.Attach(window(), config_path_);
   }
+
+  void OnShutdown() override { fullscreen_toggle_.Detach(); }
+
+ private:
+  std::filesystem::path config_path_;
+  oratan::FullscreenToggle fullscreen_toggle_;
 };

@@ -23,29 +23,25 @@ BUILD = ROOT / "out" / "build" / "win-amd64-release"
 BINARIES = ["oratan.exe", "rexruntime.dll", "rexgpu-xenos.dll"]
 VC_RUNTIME = ["msvcp140.dll", "msvcp140_atomic_wait.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
 
-ASSETS_TXT = """\
-Put your Virtual-On Oratorio Tangram game files in THIS folder.
+ASSETS_TXT = r"""Put your Virtual-On Oratorio Tangram game in THIS folder, then start oratan.exe.
 
-When you are done, this folder should contain default.xex and a folder
-called media (plus some .png and .xml files):
-
-  assets\\default.xex
-  assets\\media\\...
-
-How to get them: the game is an Xbox Live Arcade package, a single file named
+Easiest: copy the game's package file straight in here. It is a single file
+named
 
   2A944528D84678B7C9F0270A564B8E653520EF72
 
-found on your Xbox 360 under Content\\0000000000000000\\58410985\\000D0000\\.
-Open it with an STFS extractor (Velocity, Horizon, or Xenia's
-"File > Install Content") and copy everything inside it into this folder.
+found on your Xbox 360 under Content\0000000000000000\58410985\000D0000\
+(or in Xenia's content folder). It is unpacked automatically the first time
+you start the game.
+
+Already-extracted files (default.xex and the media folder) work too.
 """
 
 README_TXT = """\
 Virtual-On Oratorio Tangram (Ver.5.66) - PC recompilation  v{version}
 =====================================================================
 
-1. Copy your own game files into the "assets" folder
+1. Copy your own copy of the game into the "assets" folder
    (see assets\\HOW TO ADD THE GAME.txt).
 2. Double-click oratan.exe.
 
