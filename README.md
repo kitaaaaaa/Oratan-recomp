@@ -63,10 +63,10 @@ win that fight.
 | | |
 |---|---|
 | Single player Arcade mode (start to finish) and Training | Working, 60 fps |
-| Other modes (Score Attack, Customize), saving | Untested; reports welcome |
+| Other modes (Score Attack, Customize), saving | Working, minimally tested |
 | Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
 | Local two-player versus with split screen | Experimental, see below |
-| Xbox Live / System Link | Not supported |
+| Xbox Live / System Link | Not yet supported |
 
 ## Building from source
 
@@ -100,7 +100,8 @@ Only needed if you want to work on the project.
 ## Legal
 
 Unofficial fan project, not affiliated with or endorsed by SEGA or Microsoft.
-Virtual-On is a trademark of SEGA. Do not ask for or share game files here.
+Virtual-On is a trademark of SEGA. Character design by Hajime Katoki.
+No copyrighted game data is provided.
 
 ## Credits
 
