@@ -51,7 +51,7 @@ reports.
 | Single player Arcade mode, start to finish | Working, 60 fps |
 | Other modes (Score Attack, Training, Customize), saving | Untested; reports welcome |
 | Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
-| Local two-player versus (split screen) | In progress |
+| Local two-player versus | Experimental, single screen (F1 → "Player 2 controls the opponent"); split screen in progress |
 | Xbox Live / System Link | Not supported |
 
 ## Building from source

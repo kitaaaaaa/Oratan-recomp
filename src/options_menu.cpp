@@ -90,6 +90,15 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   }
 
   ImGui::Separator();
+  bool local_versus = rex::cvar::Query<bool>("local_versus");
+  if (ImGui::Checkbox("Player 2 controls the opponent (experimental)", &local_versus)) {
+    rex::cvar::SetFlagByName("local_versus", local_versus ? "true" : "false");
+    Save();
+  }
+  ImGui::TextDisabled("Controller 2 takes over the CPU robot. Single screen for now.\n"
+                      "Choose your side in the main menu after turning this on.");
+
+  ImGui::Separator();
   ImGui::TextDisabled("Settings are saved automatically.");
   ImGui::End();
 }

@@ -20,6 +20,7 @@ set(ORATAN_SOURCES
     src/frame_stats.cpp
     src/options_menu.cpp
     src/relaunch.cpp
+    src/local_versus.cpp
 )
 
 if(WIN32)

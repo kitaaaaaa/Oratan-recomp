@@ -10,6 +10,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "debug_tools.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -91,6 +93,8 @@ void LogGuestStack(const PPCContext& ctx, const uint8_t* base) {
 }  // namespace
 
 REX_HOOK_RAW(sub_822D3180) {
+  static uint32_t frame = 0;
+  oratan::CheckWatches(base, frame++);
   if (REXCVAR_GET(log_fps)) OnFrame();
   if (int n = REXCVAR_GET(log_present_stack); n > 0) {
     LogGuestStack(ctx, base);
