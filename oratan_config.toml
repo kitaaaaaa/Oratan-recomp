@@ -1,0 +1,58 @@
+# Manual codegen overrides for Virtual-On Oratorio Tangram (XBLA, TID 58410985)
+# Keyed by guest address; see the ReXGlue wiki "rexglue CLI Configuration File".
+
+[functions]
+# Tail-call targets that analysis left unclaimed (tiny thunks sitting in gaps
+# between other thunks). Each is reached via `b` from a neighbouring thunk.
+0x82539658 = { size = 8 }
+0x824CBBC0 = { size = 8 }
+# sub_824E4930 ends with `b 0x824e49f0` at 0x824E4A0C; the next 40 bytes are a
+# separate function reached by tail-call from sub_824D4470.
+0x824E4930 = { end = 0x824E4A10 }
+0x824E4A10 = { end = 0x824E4A38 }
+
+# Functions reached only through pointers (vtables, callback tables) with no
+# .pdata entry; analysis folded them into the preceding function.
+# Found with tools/find_missing_funcs.py.
+0x8231CDC8 = {}  # ptr at 0x820843dc, 0x820843ec, 0x82084664
+0x8231D418 = {}  # ptr at 0x820845ec, 0x82084874
+0x82461780 = {}  # ptr at 0x820b8548, 0x820b85d8
+0x8249BFF8 = {}  # ptr at 0x820bcf2c, 0x820c0ed4, 0x820c0f3c
+0x824CF128 = {}  # ptr at 0x820c6664, 0x820c6704, 0x820c686c
+0x824CF130 = {}  # ptr at 0x820c6684, 0x820c6724, 0x820c688c
+0x824CF138 = {}  # ptr at 0x820c6694
+0x824CF148 = {}  # ptr at 0x820c6650, 0x820c66f0, 0x820c6858
+0x824D3E68 = {}  # ptr at 0x820c6660, 0x820c6700, 0x820c6868
+0x824D3E70 = {}  # ptr at 0x820c665c, 0x820c66fc, 0x820c6864
+0x824D3E88 = {}  # ptr at 0x820c666c, 0x820c670c, 0x820c6874
+0x824D3E90 = {}  # ptr at 0x820c6670, 0x820c6710, 0x820c6878
+0x824D40F0 = {}  # ptr at 0x820c6654, 0x820c66f4, 0x820c685c
+0x824D40F8 = {}  # ptr at 0x820c6674, 0x820c6714, 0x820c687c
+0x824D4100 = {}  # ptr at 0x820c6a74
+0x824D4110 = {}  # ptr at 0x820c6690, 0x820c6730, 0x820c6898
+0x824D4118 = {}  # ptr at 0x820c667c, 0x820c671c, 0x820c6884
+0x824D4120 = {}  # ptr at 0x820c69c8, 0x820c6a30
+0x824D4800 = {}  # ptr at 0x820c6b8c
+0x824D5700 = {}  # ptr at 0x820c6b24
+0x824D7F38 = {}  # ptr at 0x820c6c94
+0x824E7F50 = {}  # ptr at 0x820cad28, 0x820cad2c
+0x82536820 = {}  # ptr at 0x820f1488
+
+# Function pointers built in code (lis/addi), e.g. callbacks and thunks.
+0x8231D438 = {}  # ptr at 0x8232638c, 0x82326e24
+0x8231D448 = {}  # ptr at 0x823264b4
+0x8231D458 = {}  # ptr at 0x82326cfc
+0x8231D468 = {}  # ptr at 0x82326714
+0x8231D478 = {}  # ptr at 0x82326adc
+0x8231D488 = {}  # ptr at 0x823262ec
+0x8231D498 = {}  # ptr at 0x82326764
+0x8231D4A8 = {}  # ptr at 0x82326b2c
+0x8231D4B8 = {}  # ptr at 0x8232633c
+0x8231D4C8 = {}  # ptr at 0x823267b4
+0x823ACBF0 = {}  # ptr at 0x82399290, 0x82399304
+0x823E2378 = {}  # ptr at 0x823fb5f8
+0x824617D0 = {}  # ptr at 0x820b8550
+0x824D3E78 = {}  # ptr at 0x820c6a0c
+0x8288B2B0 = {}  # ptr at 0x82889ea0
+# Not functions (mid-function labels the scanner flags; kept here as a note):
+#   0x8214FEF8, 0x821509EC
