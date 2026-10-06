@@ -95,8 +95,13 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     rex::cvar::SetFlagByName("local_versus", local_versus ? "true" : "false");
     Save();
   }
-  ImGui::TextDisabled("Controller 2 takes over the CPU robot. Single screen for now.\n"
-                      "Choose your side in the main menu after turning this on.");
+  ImGui::TextDisabled("Controller 2 takes over the CPU robot.");
+  bool split_screen = rex::cvar::Query<bool>("split_screen");
+  if (ImGui::Checkbox("Split screen during battles (experimental)", &split_screen)) {
+    rex::cvar::SetFlagByName("split_screen", split_screen ? "true" : "false");
+    Save();
+  }
+  ImGui::TextDisabled("Left: robot 1's view. Right: robot 2's view.");
 
   ImGui::Separator();
   ImGui::TextDisabled("Settings are saved automatically.");

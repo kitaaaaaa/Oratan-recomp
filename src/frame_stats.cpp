@@ -28,6 +28,10 @@ REXCVAR_DEFINE_INT32(log_present_stack, 0, "Oratan",
 
 REX_EXTERN(__imp__sub_822D3180);
 
+namespace oratan {
+void TagSwap();  // local_versus.cpp
+}
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -96,9 +100,16 @@ REX_HOOK_RAW(sub_822D3180) {
   static uint32_t frame = 0;
   oratan::CheckWatches(base, frame++);
   if (REXCVAR_GET(log_fps)) OnFrame();
+  // Note game mode switches (0 OPEN, 1 GAME, 2 NETVS, 3 CHRSEL, 4 ENDING) in the log.
+  static int last_module = -1;
+  if (const int module = base[0x839C21BC]; module != last_module) {
+    last_module = module;
+    REXLOG_INFO("game module {}", module);
+  }
   if (int n = REXCVAR_GET(log_present_stack); n > 0) {
     LogGuestStack(ctx, base);
     rex::cvar::SetFlagByName("log_present_stack", std::to_string(n - 1));
   }
+  oratan::TagSwap();
   __imp__sub_822D3180(ctx, base);
 }

@@ -6,6 +6,7 @@ before building it from source. The release zip ships the patched runtime DLLs.
 | Patch | What |
 |---|---|
 | `0001-present-vsync.patch` | Adds the `present_vsync` setting (F1 → VSync): presents without tearing but never blocks, so the game keeps full speed in fullscreen. The stock SDK always presents with tearing allowed. |
+| `0002-split-screen.patch` | Split screen: the game tags each frame swap with the view it was drawn from (`rex/system/split_screen.h`); the D3D12 backend places tagged views side by side and presents them as one image. Adds `guest_vblank_multiplier` so a title drawing two frames per tick keeps its speed. |
 
 To build the patched SDK:
 

@@ -16,14 +16,28 @@
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/system/split_screen.h>
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 REXCVAR_DEFINE_BOOL(local_versus, false, "Oratan",
                     "Experimental: controller 2 controls the opponent robot (local versus)");
 
+// Camera selector used by the replay/observer viewer: game+53125 =
+// 0 GAME CAMERA DNA (robot slot 0), 1 GAME CAMERA RNA (slot 1),
+// 2 LIVE MONITOR (sub_822ADCF0 cycles it, sub_822057B0 labels it).
+REXCVAR_DEFINE_INT32(view_camera, -1, "Oratan",
+                     "Developer: force the battle camera (-1 game default, 0 robot 1, "
+                     "1 robot 2, 2 live monitor)");
+
+REXCVAR_DEFINE_BOOL(split_screen, false, "Oratan",
+                    "Experimental: during battles, draw each robot's view and show them "
+                    "side by side (left = robot 1, right = robot 2)");
+
 REX_EXTERN(__imp__sub_8213CCD0);
+REX_EXTERN(__imp__sub_82123758);
 REX_EXTERN(__imp__sub_822A71B0);
 
 namespace {
@@ -33,6 +47,13 @@ constexpr uint32_t kSideInputStride = 316;
 constexpr uint32_t kPadIndexOffset = 300;
 
 constexpr uint32_t kGamePointer = 0x839EEA98;
+constexpr uint32_t kCameraOffset = 53125;
+constexpr uint32_t kModuleIndex = 0x839C21BC;  // byte; 1 = GAME (battle)
+constexpr uint8_t kModuleGame = 1;
+
+// View the frame being drawn right now belongs to (split screen), or
+// kNoView; read by the present hook when it tags the swap.
+int32_t g_drawing_view = rex::system::split_screen::kNoView;
 constexpr uint32_t kCpuFlagOffset[2] = {25021, 29517};
 
 uint32_t LoadU32(const uint8_t* base, uint32_t addr) {
@@ -84,6 +105,10 @@ static void AssignMissingControllers(uint8_t* base) {
 REX_HOOK_RAW(sub_822A71B0) {
   if (REXCVAR_GET(local_versus)) AssignMissingControllers(base);
   __imp__sub_822A71B0(ctx, base);
+  if (const int32_t camera = REXCVAR_GET(view_camera);
+      camera >= 0 && g_drawing_view == rex::system::split_screen::kNoView) {
+    if (const uint32_t game = LoadU32(base, kGamePointer)) base[game + kCameraOffset] = uint8_t(camera);
+  }
   if (!REXCVAR_GET(local_versus)) return;
 
   const uint32_t game = LoadU32(base, kGamePointer);
@@ -96,3 +121,50 @@ REX_HOOK_RAW(sub_822A71B0) {
     }
   }
 }
+
+// sub_82123758: the app's Draw (vtable slot 4 of the run loop object); renders
+// the frame and presents it. For split screen it runs once per robot camera.
+REX_HOOK_RAW(sub_82123758) {
+  const uint32_t game = LoadU32(base, kGamePointer);
+  const bool active = REXCVAR_GET(split_screen) && game && base[kModuleIndex] == kModuleGame;
+  static int last_state = -1;
+  const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (game ? 2 : 0) |
+                    (base[kModuleIndex] == kModuleGame ? 1 : 0);
+  if (state != last_state) {
+    REXLOG_INFO("split_screen: enabled={} game={:08X} module={} -> {}", REXCVAR_GET(split_screen),
+                game, base[kModuleIndex], active ? "split" : "normal");
+    last_state = state;
+    // The game waits for one vertical blank per presented frame; drawing every
+    // view per tick needs that many vblanks per tick to keep normal speed.
+    // Only touched while the option is on, so a manual --guest_vblank_multiplier
+    // still works otherwise.
+    if (REXCVAR_GET(split_screen)) {
+      rex::cvar::SetFlagByName("guest_vblank_multiplier",
+                               active ? std::to_string(rex::system::split_screen::kViewCount) : "1");
+    }
+  }
+  if (!active) {
+    g_drawing_view = rex::system::split_screen::kNoView;
+    __imp__sub_82123758(ctx, base);
+    return;
+  }
+  uint8_t& camera = base[game + kCameraOffset];
+  const uint8_t saved_camera = camera;
+  const auto saved_r3 = ctx.r3;
+  for (int32_t view = 0; view < rex::system::split_screen::kViewCount; ++view) {
+    camera = uint8_t(view);
+    g_drawing_view = view;
+    ctx.r3 = saved_r3;
+    __imp__sub_82123758(ctx, base);
+  }
+  camera = saved_camera;
+  g_drawing_view = rex::system::split_screen::kNoView;
+}
+
+namespace oratan {
+
+// Called right before the game's present issues VdSwap: tags the swap with the
+// view being drawn, one tag per swap (see rex/system/split_screen.h).
+void TagSwap() { rex::system::split_screen::PushSwapTag(g_drawing_view); }
+
+}  // namespace oratan

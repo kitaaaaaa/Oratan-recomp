@@ -44,14 +44,28 @@ Already-extracted files (`default.xex` and the `media` folder) work too.
 A log is written to the `logs` folder next to `oratan.exe`; attach it to bug
 reports.
 
+### Local two-player versus (experimental)
+
+The Xbox Live Arcade release only had online versus. With two controllers
+connected:
+
+1. Press **F1** and tick **Player 2 controls the opponent** and **Split screen
+   during battles**.
+2. Start any match (Training or Arcade) with controller 1. Controller 2 takes
+   over the opponent robot, and each player gets their own view side by side.
+
+Controller 2 also takes over Arcade bosses such as Ajim and Bradtos. A
+player-controlled Bradtos can't open up to expose its core, so player 1 can't
+win that fight.
+
 ## Status
 
 | | |
 |---|---|
-| Single player Arcade mode, start to finish | Working, 60 fps |
-| Other modes (Score Attack, Training, Customize), saving | Untested; reports welcome |
+| Single player Arcade mode (start to finish) and Training | Working, 60 fps |
+| Other modes (Score Attack, Customize), saving | Untested; reports welcome |
 | Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
-| Local two-player versus | Experimental, single screen (F1 → "Player 2 controls the opponent"); split screen in progress |
+| Local two-player versus with split screen | Experimental, see below |
 | Xbox Live / System Link | Not supported |
 
 ## Building from source

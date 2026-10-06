@@ -7,6 +7,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
+#include <rex/system/xmemory.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 
@@ -66,6 +67,13 @@ class OratanApp : public rex::ReXApp {
     window()->SetTitle(oratan::kWindowTitle);
     fullscreen_toggle_.Attach(window(), config_path_);
     oratan::RememberStartupSettings();
+    // Developer: F9 saves a memory snapshot next to the exe (snapshots/).
+    rex::ui::RegisterBind("bind_snapshot", "F9", "Save a memory snapshot (developer)", [this] {
+      if (!runtime() || !runtime()->memory()) return;
+      const auto dir = rex::filesystem::GetExecutableFolder() / "snapshots";
+      std::filesystem::create_directories(dir);
+      oratan::SaveSnapshot(runtime()->memory()->TranslateVirtual(0), dir.string());
+    });
     rex::ui::RegisterBind("bind_options", "F1", "Toggle the Options window", [this, drawer] {
       if (options_) {
         options_.reset();
@@ -82,6 +90,7 @@ class OratanApp : public rex::ReXApp {
 
   void OnShutdown() override {
     rex::ui::UnregisterBind("bind_options");
+    rex::ui::UnregisterBind("bind_snapshot");
     options_.reset();
     fullscreen_toggle_.Detach();
   }

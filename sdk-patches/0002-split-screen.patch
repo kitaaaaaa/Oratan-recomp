@@ -1,0 +1,321 @@
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b..d48d918 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -631,6 +631,16 @@ class D3D12CommandProcessor : public CommandProcessor {
+   Microsoft::WRL::ComPtr<ID3D12Resource> fxaa_source_texture_;
+   uint64_t fxaa_source_texture_submission_ = 0;
+ 
++  // Split screen (see rex/system/split_screen.h): swaps tagged with a view are
++  // gamma-corrected into split_scratch_texture_ (one view) and copied into
++  // their slot of split_composite_texture_ (all views side by side), which is
++  // presented once the last view arrives. Both kGuestOutputFormat, kept in
++  // NON_PIXEL_SHADER_RESOURCE state between swaps. `width` is one view's.
++  bool EnsureSplitScreenTextures(uint32_t width, uint32_t height);
++  Microsoft::WRL::ComPtr<ID3D12Resource> split_scratch_texture_;
++  Microsoft::WRL::ComPtr<ID3D12Resource> split_composite_texture_;
++  uint64_t split_textures_submission_ = 0;
++
+   // Unsubmitted barrier batch.
+   std::vector<D3D12_RESOURCE_BARRIER> barriers_;
+ 
+diff --git a/include/rex/system/split_screen.h b/include/rex/system/split_screen.h
+new file mode 100644
+index 0000000..4069b51
+--- /dev/null
++++ b/include/rex/system/split_screen.h
+@@ -0,0 +1,31 @@
++/**
++ * @file        system/split_screen.h
++ * @brief       Tags guest frame swaps for split-screen composition.
++ *
++ * A title that renders one full frame per viewpoint (e.g. one per player)
++ * tags each swap with its viewpoint before issuing it. The GPU backend pops
++ * the tags in swap order and composes the tagged frames side by side into one
++ * presented image. Untagged swaps are presented normally.
++ */
++
++#pragma once
++
++#include <cstdint>
++
++namespace rex::system::split_screen {
++
++// Number of viewpoints composed side by side.
++inline constexpr int32_t kViewCount = 2;
++
++// Tag for an untagged (normal, full-screen) swap.
++inline constexpr int32_t kNoView = -1;
++
++// Called by the title right before it issues a swap: `view` is the viewpoint
++// (0 = left, 1 = right) the swapped frame was rendered from, or kNoView.
++void PushSwapTag(int32_t view);
++
++// Called by the GPU backend once per processed swap, in order. Returns
++// kNoView when no tag is queued.
++int32_t PopSwapTag();
++
++}  // namespace rex::system::split_screen
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..9c46536 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <rex/system/split_screen.h>
+ #include <algorithm>
+ #include <cstdarg>
+ #include <cstring>
+@@ -1894,6 +1895,10 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                       uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  // Split screen: which view this swap was rendered from, if the title tagged
++  // it. Popped first, exactly once per swap, so tags stay in order even when
++  // the swap is skipped below.
++  int32_t split_view = rex::system::split_screen::PopSwapTag();
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -1985,14 +1990,25 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+   uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
+ 
++  if (split_view >= rex::system::split_screen::kViewCount ||
++      (split_view >= 0 && !EnsureSplitScreenTextures(guest_output_width, guest_output_height))) {
++    split_view = rex::system::split_screen::kNoView;
++  }
++  // The views are placed side by side at full size, so the presented image is
++  // kViewCount times as wide (and the presenter letterboxes it to the window).
++  const uint32_t view_count = split_view >= 0 ? rex::system::split_screen::kViewCount : 1;
++
+   presenter->RefreshGuestOutput(
+-      guest_output_width, guest_output_height, display_width, display_height,
++      guest_output_width * view_count, guest_output_height, display_width * view_count,
++      display_height,
+       [this, &swap_texture_srv_desc, frontbuffer_format, swap_texture_resource, guest_output_width,
+-       guest_output_height](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
++       guest_output_height, split_view](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+         const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+         ID3D12Device* device = provider.GetDevice();
+ 
+-        SwapPostEffect swap_post_effect = GetActualSwapPostEffect();
++        const bool split = split_view >= 0;
++        SwapPostEffect swap_post_effect =
++            split ? SwapPostEffect::kNone : GetActualSwapPostEffect();
+         bool use_fxaa = swap_post_effect == SwapPostEffect::kFxaa ||
+                         swap_post_effect == SwapPostEffect::kFxaaExtreme;
+         if (use_fxaa) {
+@@ -2115,10 +2131,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+         }
+ 
+         ID3D12Resource* apply_gamma_dest =
+-            use_fxaa ? fxaa_source_texture_.Get() : guest_output_resource;
++            split ? split_scratch_texture_.Get()
++                  : (use_fxaa ? fxaa_source_texture_.Get() : guest_output_resource);
+         D3D12_RESOURCE_STATES apply_gamma_dest_initial_state =
+-            use_fxaa ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+-                     : ui::d3d12::D3D12Presenter::kGuestOutputInternalState;
++            (split || use_fxaa) ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
++                                : ui::d3d12::D3D12Presenter::kGuestOutputInternalState;
+         static_cast<ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(context)
+             .resource_uav_capable();
+         PushTransitionBarrier(apply_gamma_dest, apply_gamma_dest_initial_state,
+@@ -2168,6 +2185,50 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+         uint32_t group_count_y = (guest_output_height + 7) / 8;
+         deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
+ 
++        if (split) {
++          // Copy this view into its slot of the composite.
++          split_textures_submission_ = submission_current_;
++          ID3D12Resource* composite = split_composite_texture_.Get();
++          PushTransitionBarrier(apply_gamma_dest, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++                                D3D12_RESOURCE_STATE_COPY_SOURCE);
++          PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++                                D3D12_RESOURCE_STATE_COPY_DEST);
++          SubmitBarriers();
++          D3D12_TEXTURE_COPY_LOCATION split_dest = {};
++          split_dest.pResource = composite;
++          split_dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++          D3D12_TEXTURE_COPY_LOCATION split_source = {};
++          split_source.pResource = apply_gamma_dest;
++          split_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++          D3D12_BOX split_box = {0, 0, 0, guest_output_width, guest_output_height, 1};
++          deferred_command_list_.D3DCopyTextureRegion(&split_dest,
++                                                      uint32_t(split_view) * guest_output_width, 0,
++                                                      0, &split_source, &split_box);
++          PushTransitionBarrier(apply_gamma_dest, D3D12_RESOURCE_STATE_COPY_SOURCE,
++                                apply_gamma_dest_initial_state);
++          const bool last_view = split_view == rex::system::split_screen::kViewCount - 1;
++          if (last_view) {
++            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_DEST,
++                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
++            PushTransitionBarrier(guest_output_resource,
++                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState,
++                                  D3D12_RESOURCE_STATE_COPY_DEST);
++            SubmitBarriers();
++            deferred_command_list_.D3DCopyResource(guest_output_resource, composite);
++            PushTransitionBarrier(guest_output_resource, D3D12_RESOURCE_STATE_COPY_DEST,
++                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState);
++            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_SOURCE,
++                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++          } else {
++            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_DEST,
++                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++          }
++          SubmitBarriers();
++          EndSubmission(true);
++          // Only the last view publishes the composed image.
++          return last_view;
++        }
++
+         // Apply FXAA.
+         if (use_fxaa) {
+           // Destination and source.
+@@ -2256,6 +2317,50 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   EndSubmission(true);
+ }
+ 
++bool D3D12CommandProcessor::EnsureSplitScreenTextures(uint32_t width, uint32_t height) {
++  if (split_scratch_texture_) {
++    D3D12_RESOURCE_DESC existing = split_scratch_texture_->GetDesc();
++    if (existing.Width == width && existing.Height == height) {
++      return true;
++    }
++    for (auto* texture : {std::addressof(split_scratch_texture_), std::addressof(split_composite_texture_)}) {
++      if (submission_completed_ < split_textures_submission_) {
++        (*texture)->AddRef();
++        resources_for_deletion_.emplace_back(split_textures_submission_, texture->Get());
++      }
++      texture->Reset();
++    }
++    split_textures_submission_ = 0;
++  }
++  const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
++  ID3D12Device* device = provider.GetDevice();
++  D3D12_RESOURCE_DESC desc = {};
++  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++  desc.Width = width;
++  desc.Height = height;
++  desc.DepthOrArraySize = 1;
++  desc.MipLevels = 1;
++  desc.Format = ui::d3d12::D3D12Presenter::kGuestOutputFormat;
++  desc.SampleDesc.Count = 1;
++  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++  desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++  for (auto* texture : {std::addressof(split_scratch_texture_), std::addressof(split_composite_texture_)}) {
++    desc.Width = texture == std::addressof(split_composite_texture_)
++                     ? uint64_t(width) * rex::system::split_screen::kViewCount
++                     : width;
++    if (FAILED(device->CreateCommittedResource(
++            &ui::d3d12::util::kHeapPropertiesDefault, provider.GetHeapFlagCreateNotZeroed(), &desc,
++            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
++            IID_PPV_ARGS(texture->ReleaseAndGetAddressOf())))) {
++      REXGPU_ERROR("Failed to create the split screen textures");
++      split_scratch_texture_.Reset();
++      split_composite_texture_.Reset();
++      return false;
++    }
++  }
++  return true;
++}
++
+ void D3D12CommandProcessor::OnPrimaryBufferEnd() {
+   if (REXCVAR_GET(d3d12_submit_on_primary_buffer_end) && submission_open_ &&
+       CanEndSubmissionImmediately()) {
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..8ca4070 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -58,6 +58,11 @@ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
+ }
+ }  // namespace
+ 
++REXCVAR_DEFINE_INT32(guest_vblank_multiplier, 1, "GPU",
++                     "Guest vertical blanks per display refresh (set by titles that "
++                     "present several frames per tick, e.g. split screen)")
++    .range(1, 4);
++
+ namespace rex::graphics {
+ 
+ // Nvidia Optimus/AMD PowerXpress support.
+@@ -158,10 +163,21 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
+         uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
+         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
++        int32_t last_multiplier = 1;
+         while (vsync_worker_running_) {
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+           uint64_t interval_ticks =
+               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
++          // A title presenting several frames per game tick (split screen) needs
++          // that many vertical blanks per tick to keep its speed.
++          const int32_t multiplier = REXCVAR_GET(guest_vblank_multiplier);
++          if (multiplier != last_multiplier) {
++            REXGPU_INFO("Guest vblank multiplier: {}", multiplier);
++            last_multiplier = multiplier;
++          }
++          if (multiplier > 1) {
++            interval_ticks = std::max(uint64_t(1), interval_ticks / uint64_t(multiplier));
++          }
+           while (current_time - last_frame_time >= interval_ticks) {
+             MarkVblank();
+             last_frame_time += interval_ticks;
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index fc46d86..707b8be 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -21,6 +21,7 @@ set(REXSYSTEM_SOURCES
+     xobject.cpp
+     xmodule.cpp
+     guest_path.cpp
++    split_screen.cpp
+ 
+     # Utilities
+     util/object_table.cpp
+diff --git a/src/system/split_screen.cpp b/src/system/split_screen.cpp
+new file mode 100644
+index 0000000..fdb581c
+--- /dev/null
++++ b/src/system/split_screen.cpp
+@@ -0,0 +1,38 @@
++/**
++ * @file        system/split_screen.cpp
++ * @brief       Tags guest frame swaps for split-screen composition.
++ */
++
++#include <rex/system/split_screen.h>
++
++#include <deque>
++#include <mutex>
++
++namespace rex::system::split_screen {
++namespace {
++
++std::mutex g_mutex;
++std::deque<int32_t> g_tags;
++
++// Swaps are processed a few frames behind the guest at most; anything beyond
++// this means tags stopped being consumed (e.g. no GPU backend), so drop the
++// oldest rather than grow without bound.
++constexpr size_t kMaxQueued = 16;
++
++}  // namespace
++
++void PushSwapTag(int32_t view) {
++  std::lock_guard lock(g_mutex);
++  if (g_tags.size() >= kMaxQueued) g_tags.pop_front();
++  g_tags.push_back(view);
++}
++
++int32_t PopSwapTag() {
++  std::lock_guard lock(g_mutex);
++  if (g_tags.empty()) return kNoView;
++  const int32_t view = g_tags.front();
++  g_tags.pop_front();
++  return view;
++}
++
++}  // namespace rex::system::split_screen
