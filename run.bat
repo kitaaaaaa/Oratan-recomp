@@ -9,4 +9,4 @@ if not exist "%EXE%" (
   exit /b 1
 )
 if not exist "%ROOT%logs" mkdir "%ROOT%logs"
-"%EXE%" --game_data_root="%ROOT%assets" --log_file="%ROOT%logs\oratan.log" %*
+"%EXE%" --log_file="%ROOT%logs\oratan.log" %*
