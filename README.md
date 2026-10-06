@@ -49,11 +49,9 @@ the Xenos GPU layer derived from Xenia).
    ```
    The first build runs `rexglue codegen` on `assets/default.xex` and compiles
    the result, which takes a while.
-4. The game is at `out\build\win-amd64-release\oratan.exe`. Run it with the
-   game folder as its argument, or copy `assets/` next to the exe:
-   ```bat
-   out\build\win-amd64-release\oratan.exe assets
-   ```
+4. Run `out\build\win-amd64-release\oratan.exe`, or `run.bat`, which also
+   writes a log to `logs\oratan.log`. The exe finds the game in `assets/` on
+   its own; pass `--game_data_root=<folder>` to point it somewhere else.
 
 `build.bat` also picks up portable tools placed in a sibling `..\tools\`
 folder (`llvm\`, `cmake\`, `rexsdk\win-amd64\`).
