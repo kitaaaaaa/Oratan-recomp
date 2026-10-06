@@ -7,6 +7,7 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
+#include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 
 #include <cstdlib>
@@ -16,6 +17,8 @@
 #include "debug_tools.h"
 #include "fullscreen_toggle.h"
 #include "game_files.h"
+#include "options_menu.h"
+#include "relaunch.h"
 
 class OratanApp : public rex::ReXApp {
  public:
@@ -59,15 +62,31 @@ class OratanApp : public rex::ReXApp {
   }
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-    (void)drawer;
     if (!window()) return;
     window()->SetTitle(oratan::kWindowTitle);
     fullscreen_toggle_.Attach(window(), config_path_);
+    oratan::RememberStartupSettings();
+    rex::ui::RegisterBind("bind_options", "F1", "Toggle the Options window", [this, drawer] {
+      if (options_) {
+        options_.reset();
+      } else {
+        options_ = std::make_unique<oratan::OptionsDialog>(drawer, config_path_, [this] {
+          // Settings are already saved; start a fresh copy, then quit this one
+          // (deferred, so the Options window is not torn down mid-draw).
+          if (oratan::LaunchNewInstance()) app_context().RequestDeferredQuit();
+        });
+      }
+    });
   }
 
-  void OnShutdown() override { fullscreen_toggle_.Detach(); }
+  void OnShutdown() override {
+    rex::ui::UnregisterBind("bind_options");
+    options_.reset();
+    fullscreen_toggle_.Detach();
+  }
 
  private:
   std::filesystem::path config_path_;
   oratan::FullscreenToggle fullscreen_toggle_;
+  std::unique_ptr<oratan::OptionsDialog> options_;
 };

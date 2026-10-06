@@ -36,6 +36,7 @@ Already-extracted files (`default.xex` and the `media` folder) work too.
 ### Controls
 
 - Xbox controllers work as on the console.
+- **F1** opens Options (resolution, fullscreen).
 - **Alt+Enter** switches between fullscreen and a window. To move the game to
   another monitor: Alt+Enter, drag the window over, Alt+Enter again. The
   choice is remembered.

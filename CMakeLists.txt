@@ -17,6 +17,9 @@ set(ORATAN_SOURCES
     src/game_files.cpp
     src/stl_compat.cpp
     src/debug_tools.cpp
+    src/frame_stats.cpp
+    src/options_menu.cpp
+    src/relaunch.cpp
 )
 
 if(WIN32)
