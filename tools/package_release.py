@@ -45,9 +45,13 @@ Virtual-On Oratorio Tangram (Ver.5.66) - PC recompilation  v{version}
    (see assets\\HOW TO ADD THE GAME.txt).
 2. Double-click oratan.exe.
 
-Controls: Xbox controllers work as on the console.
+Controls:
+  Xbox controllers work as on the console.
+  F1         Options (resolution, VSync, fullscreen)
+  Alt+Enter  Switch between fullscreen and a window
 
-Early alpha: expect bugs. Reports and logs are welcome at
+Alpha: the game is playable from start to finish. Bug reports and logs are
+welcome at
 https://github.com/kitaaaaaa/Oratan-recomp/issues
 A log is written to the "logs" folder next to oratan.exe.
 

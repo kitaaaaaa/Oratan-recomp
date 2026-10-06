@@ -5,9 +5,9 @@ M.S.B.S. Ver.5.66**, made by recompiling the 2009 Xbox Live Arcade release.
 It is not an emulator: the game's code was translated into a regular Windows
 program.
 
-> [!WARNING]
-> Early alpha. It boots, reaches the menus and plays the attract mode.
-> Expect bugs; please [report them](https://github.com/kitaaaaaa/Oratan-recomp/issues).
+> [!NOTE]
+> Alpha. The game is playable from start to finish. Please
+> [report bugs](https://github.com/kitaaaaaa/Oratan-recomp/issues).
 
 ## How to play
 
@@ -48,9 +48,11 @@ reports.
 
 | | |
 |---|---|
-| Boots, title screen, menus, attract mode | Working |
-| Gameplay | Testing |
-| Xbox Live features | Not supported |
+| Single player Arcade mode, start to finish | Working, 60 fps |
+| Other modes (Score Attack, Training, Customize), saving | Untested; reports welcome |
+| Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
+| Local two-player versus (split screen) | In progress |
+| Xbox Live / System Link | Not supported |
 
 ## Building from source
 
@@ -58,19 +60,20 @@ Only needed if you want to work on the project.
 
 1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/)
    with **Desktop development with C++**, plus [LLVM/Clang 20+](https://github.com/llvm/llvm-project/releases),
-   [CMake 3.25+](https://cmake.org/download/) and Ninja, and unzip the
-   ReXGlue SDK v0.10.0 built from source with the patches in
-   [sdk-patches/](sdk-patches/README.md) (the stock prebuilt SDK also works,
-   minus the VSync option).
-2. Put your game files in `assets/`.
-3. Configure and build (the first build recompiles the game, which takes a few minutes):
+   [CMake 3.25+](https://cmake.org/download/) and Ninja.
+2. Build ReXGlue SDK v0.10.0 from source with the patches in
+   [sdk-patches/](sdk-patches/README.md), installing it to a folder of your
+   choice (the SDK prefix). The stock prebuilt SDK zip also works, minus the
+   VSync option; its prefix is the `win-amd64` folder inside the zip.
+3. Put your game files in `assets/`.
+4. Configure and build (the first build recompiles the game, which takes a few minutes):
    ```
-   cmake --preset win-amd64-release -DCMAKE_PREFIX_PATH=<path to SDK>\win-amd64
+   cmake --preset win-amd64-release -DCMAKE_PREFIX_PATH=<SDK prefix>
    cmake --build out\build\win-amd64-release
    ```
    `build.bat` does the same and also finds portable tools in a sibling
    `..\tools\` folder.
-4. `python tools/package_release.py <version>` makes the release zip.
+5. `python tools/package_release.py <version>` makes the release zip.
 
 | Path | What |
 |---|---|
