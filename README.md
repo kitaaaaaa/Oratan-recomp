@@ -1,75 +1,87 @@
 # Oratan-recomp
 
-A static recompilation of **Cyber Troopers Virtual-On Oratorio Tangram
-M.S.B.S. Ver.5.66** (Xbox Live Arcade, 2009) to native Windows, built on the
-[ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
-
-The game's PowerPC code is translated ahead of time into C++ and compiled for
-x86-64. ReXGlue supplies the Xbox 360 runtime (kernel, file system, audio, and
-the Xenos GPU layer derived from Xenia).
-
-> [!IMPORTANT]
-> This repository contains **no game code or data**. You need your own copy of
-> the XBLA release. The recompiled C++ is generated locally from your copy and
-> is never committed.
+A native PC version of **Cyber Troopers Virtual-On Oratorio Tangram
+M.S.B.S. Ver.5.66**, made by recompiling the 2009 Xbox Live Arcade release.
+It is not an emulator: the game's code was translated into a regular Windows
+program.
 
 > [!WARNING]
-> Early work in progress. Expect crashes, graphical bugs, and missing features.
+> Early alpha. It boots, reaches the menus and plays the attract mode.
+> Expect bugs; please [report them](https://github.com/kitaaaaaa/Oratan-recomp/issues).
+
+## How to play
+
+You need your own copy of the Xbox Live Arcade game. No game files are
+included here.
+
+1. **Download** the latest `Oratan-recomp-…-win64.zip` from
+   [Releases](https://github.com/kitaaaaaa/Oratan-recomp/releases) and unzip it
+   anywhere.
+2. **Add your game files** to the `assets` folder inside it (see below).
+3. **Double-click `oratan.exe`.**
+
+Nothing needs to be installed. Windows 10 or 11 (64-bit) with a DirectX 12
+graphics card is required.
+
+### Getting your game files
+
+The game is a single Xbox Live Arcade package file named
+`2A944528D84678B7C9F0270A564B8E653520EF72`. On an Xbox 360 it lives in
+`Content\0000000000000000\58410985\000D0000\`.
+
+Open that file with an STFS extractor and copy **everything inside it** into
+the `assets` folder. Any of these works:
+
+- [Xenia](https://xenia.jp/): **File → Install Content**, pick the file, then
+  copy the unpacked folder from Xenia's `content\0000000000000000\58410985\000D0000\`.
+- Velocity or Horizon: open the file and extract all.
+
+When it's right, `assets` contains `default.xex` and a `media` folder.
+
+### Controls
+
+Xbox controllers work as on the console. A log is written to the `logs`
+folder next to `oratan.exe`; attach it to bug reports.
 
 ## Status
 
-| Phase | State |
+| | |
 |---|---|
-| XEX analysis / codegen | Done: 0 analysis errors, ~14.3k functions |
-| Builds and links | Done |
-| Boots to title, menus, attract mode | Working |
+| Boots, title screen, menus, attract mode | Working |
 | Gameplay | Testing |
+| Xbox Live features | Not supported |
 
-## Requirements
+## Building from source
 
-- Windows 10/11, x64
-- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/) with
-  the **Desktop development with C++** workload (for the MSVC STL and Windows SDK)
-- Clang 20 or newer ([LLVM releases](https://github.com/llvm/llvm-project/releases))
-- CMake 3.25 or newer, and Ninja
-- [ReXGlue SDK v0.10.0](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0)
-  (`rexglue-sdk-0.10.0-win-amd64.zip`)
+Only needed if you want to work on the project.
 
-## Building
-
-1. Extract your copy of the game into `assets/` (see
-   [assets/README.md](assets/README.md)).
-2. Unzip the ReXGlue SDK somewhere and set `REXSDK` to its `win-amd64` folder:
-   ```bat
-   set REXSDK=C:\path\to\rexglue-sdk\win-amd64
+1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/vs/community/)
+   with **Desktop development with C++**, plus [LLVM/Clang 20+](https://github.com/llvm/llvm-project/releases),
+   [CMake 3.25+](https://cmake.org/download/) and Ninja, and unzip the
+   [ReXGlue SDK v0.10.0](https://github.com/rexglue/rexglue-sdk/releases/tag/v0.10.0)
+   (`rexglue-sdk-0.10.0-win-amd64.zip`).
+2. Put your game files in `assets/`.
+3. Configure and build (the first build recompiles the game, which takes a few minutes):
    ```
-3. Run:
-   ```bat
-   build.bat release
+   cmake --preset win-amd64-release -DCMAKE_PREFIX_PATH=<path to SDK>\win-amd64
+   cmake --build out\build\win-amd64-release
    ```
-   The first build runs `rexglue codegen` on `assets/default.xex` and compiles
-   the result, which takes a while.
-4. Run `out\build\win-amd64-release\oratan.exe`, or `run.bat`, which also
-   writes a log to `logs\oratan.log`. The exe finds the game in `assets/` on
-   its own; pass `--game_data_root=<folder>` to point it somewhere else.
-
-`build.bat` also picks up portable tools placed in a sibling `..\tools\`
-folder (`llvm\`, `cmake\`, `rexsdk\win-amd64\`).
-
-## Project layout
+   `build.bat` does the same and also finds portable tools in a sibling
+   `..\tools\` folder.
+4. `python tools/package_release.py <version>` makes the release zip.
 
 | Path | What |
 |---|---|
-| `oratan_manifest.toml` | Codegen manifest (entry XEX, setjmp/longjmp) |
-| `oratan_config.toml` | Manual function boundaries and hooks for this game |
-| `src/` | The host app: boot defaults, hooks, patches |
-| `generated/rexglue.cmake` | SDK integration (managed by `rexglue`) |
-| `generated/default/` | Recompiled code (generated locally, gitignored) |
+| `oratan_manifest.toml` | Recompiler settings (entry XEX, setjmp/longjmp) |
+| `oratan_config.toml` | Hand-fixed function boundaries for this game |
+| `src/` | The PC side: startup, paths, patches |
+| `tools/` | Analysis and packaging scripts |
+| `generated/default/` | Recompiled code (generated locally, not committed) |
 
 ## Legal
 
-This project is not affiliated with SEGA or Microsoft. Virtual-On is a
-trademark of SEGA. Do not ask for or share game files here.
+Unofficial fan project, not affiliated with or endorsed by SEGA or Microsoft.
+Virtual-On is a trademark of SEGA. Do not ask for or share game files here.
 
 ## Credits
 

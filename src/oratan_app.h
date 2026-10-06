@@ -7,7 +7,12 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
+#include <rex/system.h>
 #include <rex/ui/window.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <string>
 
 #include "debug_tools.h"
 
@@ -34,6 +39,16 @@ class OratanApp : public rex::ReXApp {
           paths.game_data_root = std::filesystem::weakly_canonical(dir);
           break;
         }
+      }
+      if (paths.game_data_root.empty()) {
+        rex::ShowSimpleMessageBox(
+            rex::SimpleMessageBoxType::Error,
+            std::string("Virtual-On OT game files not found.\n\n"
+                        "Copy your extracted copy of the game (default.xex and "
+                        "the media folder) into:\n\n") +
+                (exe_dir / "assets").string() +
+                "\n\nSee \"HOW TO ADD THE GAME.txt\" in that folder.");
+        std::exit(1);
       }
     }
     // XBLA titles run as the trial unless the full-game license bit is set.
