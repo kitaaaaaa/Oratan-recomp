@@ -19,6 +19,7 @@ set(ORATAN_SOURCES
     src/debug_tools.cpp
     src/frame_stats.cpp
     src/options_menu.cpp
+    src/settings.cpp
     src/relaunch.cpp
     src/local_versus.cpp
 )

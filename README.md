@@ -36,7 +36,7 @@ Already-extracted files (`default.xex` and the `media` folder) work too.
 ### Controls
 
 - Xbox controllers work as on the console.
-- **F1** opens Options (resolution, VSync, fullscreen).
+- **F1** opens Options (resolution, VSync, fullscreen, local versus).
 - **Alt+Enter** switches between fullscreen and a window. To move the game to
   another monitor: Alt+Enter, drag the window over, Alt+Enter again. The
   choice is remembered.
@@ -57,6 +57,10 @@ connected:
 Controller 2 also takes over Arcade bosses when they appear such as Ajim, Bradtos and Tangram. A
 player-controlled Bradtos can't open up to expose its core, so player 1 can't
 win that fight and progress. P2 as Tangram has not been tested.
+
+Unticking **Player 2 controls the opponent** mid-match hands the opponent back
+to the CPU. With split screen on, Arcade's Continue and Game Over screens are
+also shown twice, side by side.
 
 
 ## Status

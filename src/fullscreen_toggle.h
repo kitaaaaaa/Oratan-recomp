@@ -14,6 +14,8 @@
 
 #include <filesystem>
 
+#include "settings.h"
+
 namespace oratan {
 
 class FullscreenToggle : public rex::ui::WindowInputListener {
@@ -39,7 +41,7 @@ class FullscreenToggle : public rex::ui::WindowInputListener {
     if (e.prev_state() || !window_) return;  // ignore key repeat
     // The fullscreen cvar's change callback resizes the window.
     rex::cvar::SetFlagByName("fullscreen", window_->IsFullscreen() ? "false" : "true");
-    if (!config_path_.empty()) rex::cvar::SaveConfig(config_path_);
+    if (!config_path_.empty()) oratan::SaveSettings(config_path_);
   }
 
  private:

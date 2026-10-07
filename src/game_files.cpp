@@ -38,7 +38,7 @@ fs::path FindExtracted(const fs::path& dir) {
   std::error_code ec;
   if (!fs::is_directory(dir, ec)) return {};
   if (HasGame(dir)) return dir;
-  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
+  for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec); !ec && it != fs::recursive_directory_iterator();
        it.increment(ec)) {
     if (it.depth() >= kMaxSearchDepth) {
       it.disable_recursion_pending();
@@ -63,7 +63,7 @@ bool IsGamePackage(const fs::path& file) {
 fs::path FindPackage(const fs::path& dir) {
   std::error_code ec;
   if (!fs::is_directory(dir, ec)) return {};
-  for (auto it = fs::recursive_directory_iterator(dir, ec); !ec && it != fs::recursive_directory_iterator();
+  for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec); !ec && it != fs::recursive_directory_iterator();
        it.increment(ec)) {
     if (it.depth() >= kMaxSearchDepth) {
       it.disable_recursion_pending();

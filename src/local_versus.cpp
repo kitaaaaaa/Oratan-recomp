@@ -48,8 +48,14 @@ constexpr uint32_t kPadIndexOffset = 300;
 
 constexpr uint32_t kGamePointer = 0x839EEA98;
 constexpr uint32_t kCameraOffset = 53125;
-constexpr uint32_t kModuleIndex = 0x839C21BC;  // byte; 1 = GAME (battle)
-constexpr uint8_t kModuleGame = 1;
+constexpr uint32_t kModuleIndex = 0x839C21BC;  // byte, see IsBattleModule
+
+// Battles run in the GAME module (1: Arcade, Score Attack) and the NETVS
+// module (2: Training, online versus).
+bool IsBattleModule(const uint8_t* base) {
+  const uint8_t module = base[kModuleIndex];
+  return module == 1 || module == 2;
+}
 
 // View the frame being drawn right now belongs to (split screen), or
 // kNoView; read by the present hook when it tags the swap.
@@ -109,15 +115,28 @@ REX_HOOK_RAW(sub_822A71B0) {
       camera >= 0 && g_drawing_view == rex::system::split_screen::kNoView) {
     if (const uint32_t game = LoadU32(base, kGamePointer)) base[game + kCameraOffset] = uint8_t(camera);
   }
-  if (!REXCVAR_GET(local_versus)) return;
-
+  // Sides whose CPU flag we cleared in the current battle, so turning the
+  // option off mid-battle can hand them back to the AI instead of leaving the
+  // robot frozen.
+  static bool switched[2] = {false, false};
   const uint32_t game = LoadU32(base, kGamePointer);
-  if (!game) return;
+  const bool in_battle = game && IsBattleModule(base);
+  if (!in_battle) {
+    switched[0] = switched[1] = false;  // the next battle sets its own flags
+    return;
+  }
   for (int side = 0; side < 2; ++side) {
     uint8_t* cpu_flag = base + game + kCpuFlagOffset[side];
-    if (*cpu_flag == 1) {
-      *cpu_flag = 0;
-      REXLOG_INFO("local_versus: side {} robot switched from CPU to controller", side);
+    if (REXCVAR_GET(local_versus)) {
+      if (*cpu_flag == 1) {
+        *cpu_flag = 0;
+        switched[side] = true;
+        REXLOG_INFO("local_versus: side {} robot switched from CPU to controller", side);
+      }
+    } else if (switched[side]) {
+      *cpu_flag = 1;
+      switched[side] = false;
+      REXLOG_INFO("local_versus: side {} robot handed back to the CPU", side);
     }
   }
 }
@@ -126,25 +145,20 @@ REX_HOOK_RAW(sub_822A71B0) {
 // the frame and presents it. For split screen it runs once per robot camera.
 REX_HOOK_RAW(sub_82123758) {
   const uint32_t game = LoadU32(base, kGamePointer);
-  const bool active = REXCVAR_GET(split_screen) && game && base[kModuleIndex] == kModuleGame;
+  const bool active = REXCVAR_GET(split_screen) && game && IsBattleModule(base);
   static int last_state = -1;
-  static bool multiplier_set = false;  // guest_vblank_multiplier raised by us
   const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (game ? 2 : 0) |
-                    (base[kModuleIndex] == kModuleGame ? 1 : 0);
+                    (IsBattleModule(base) ? 1 : 0);
   if (state != last_state) {
     REXLOG_INFO("split_screen: enabled={} game={:08X} module={} -> {}", REXCVAR_GET(split_screen),
                 game, base[kModuleIndex], active ? "split" : "normal");
     last_state = state;
     // The game waits for one vertical blank per presented frame; drawing every
     // view per tick needs that many vblanks per tick to keep normal speed.
-    // Only raised while split, and put back only if raised here, so a manual
-    // --guest_vblank_multiplier still works otherwise. Turning the option off
-    // mid-battle must still put it back, or the game runs at double speed.
-    if (active || multiplier_set) {
-      rex::cvar::SetFlagByName("guest_vblank_multiplier",
-                               active ? std::to_string(rex::system::split_screen::kViewCount) : "1");
-      multiplier_set = active;
-    }
+    // This is runtime-only state (a cvar write would end up in the saved
+    // config and run the next session's menus at double speed).
+    rex::system::split_screen::SetVblankMultiplier(active ? rex::system::split_screen::kViewCount
+                                                          : 1);
   }
   if (!active) {
     g_drawing_view = rex::system::split_screen::kNoView;
@@ -175,5 +189,8 @@ namespace oratan {
 // returns without swapping cannot shift later tags onto the wrong side (see
 // rex/system/split_screen.h).
 void TagSwap() { rex::system::split_screen::SetNextSwapView(g_drawing_view); }
+
+// View being drawn right now (split screen), or -1.
+int32_t CurrentDrawView() { return g_drawing_view; }
 
 }  // namespace oratan

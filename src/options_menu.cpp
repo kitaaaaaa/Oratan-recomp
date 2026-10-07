@@ -6,6 +6,8 @@
 
 #include <imgui.h>
 
+#include "settings.h"
+
 #include <string>
 
 namespace oratan {
@@ -43,7 +45,7 @@ OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path
       restart_(std::move(restart)) {}
 
 void OptionsDialog::Save() {
-  if (!config_path_.empty()) rex::cvar::SaveConfig(config_path_);
+  if (!config_path_.empty()) SaveSettings(config_path_);
 }
 
 void OptionsDialog::OnDraw(ImGuiIO& io) {

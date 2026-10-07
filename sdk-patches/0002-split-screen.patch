@@ -1,8 +1,8 @@
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
-index 96d362b..d48d918 100644
+index 96d362b..dfd837b 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
 +++ b/include/rex/graphics/d3d12/command_processor.h
-@@ -631,6 +631,16 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -631,6 +631,20 @@ class D3D12CommandProcessor : public CommandProcessor {
    Microsoft::WRL::ComPtr<ID3D12Resource> fxaa_source_texture_;
    uint64_t fxaa_source_texture_submission_ = 0;
  
@@ -15,16 +15,20 @@ index 96d362b..d48d918 100644
 +  Microsoft::WRL::ComPtr<ID3D12Resource> split_scratch_texture_;
 +  Microsoft::WRL::ComPtr<ID3D12Resource> split_composite_texture_;
 +  uint64_t split_textures_submission_ = 0;
++  // Bit per view drawn into the composite since splitting started; the
++  // composite is only presented once every view is in it (the texture is not
++  // cleared on creation).
++  uint32_t split_views_received_ = 0;
 +
    // Unsubmitted barrier batch.
    std::vector<D3D12_RESOURCE_BARRIER> barriers_;
  
 diff --git a/include/rex/system/split_screen.h b/include/rex/system/split_screen.h
 new file mode 100644
-index 0000000..73d5033
+index 0000000..55a9768
 --- /dev/null
 +++ b/include/rex/system/split_screen.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,45 @@
 +/**
 + * @file        system/split_screen.h
 + * @brief       Tags guest frame swaps for split-screen composition.
@@ -62,9 +66,16 @@ index 0000000..73d5033
 +// kNoView when no tag is queued.
 +int32_t PopSwapTag();
 +
++// Guest vertical blanks per display refresh requested by the title while it
++// presents several frames per tick (1 = normal). Runtime state only, never
++// saved; the guest_vblank_multiplier cvar is the user's setting and the
++// higher of the two applies.
++void SetVblankMultiplier(int32_t multiplier);
++int32_t VblankMultiplier();
++
 +}  // namespace rex::system::split_screen
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..9c46536 100644
+index 19874a5..fe64df7 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -9,6 +9,7 @@
@@ -86,13 +97,16 @@ index 19874a5..9c46536 100644
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
  
-@@ -1985,14 +1990,25 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -1985,14 +1990,28 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
  
 +  if (split_view >= rex::system::split_screen::kViewCount ||
 +      (split_view >= 0 && !EnsureSplitScreenTextures(guest_output_width, guest_output_height))) {
 +    split_view = rex::system::split_screen::kNoView;
++  }
++  if (split_view < 0) {
++    split_views_received_ = 0;
 +  }
 +  // The views are placed side by side at full size, so the presented image is
 +  // kViewCount times as wide (and the presenter letterboxes it to the window).
@@ -115,7 +129,7 @@ index 19874a5..9c46536 100644
          bool use_fxaa = swap_post_effect == SwapPostEffect::kFxaa ||
                          swap_post_effect == SwapPostEffect::kFxaaExtreme;
          if (use_fxaa) {
-@@ -2115,10 +2131,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2115,10 +2134,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
          }
  
          ID3D12Resource* apply_gamma_dest =
@@ -130,7 +144,7 @@ index 19874a5..9c46536 100644
          static_cast<ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(context)
              .resource_uav_capable();
          PushTransitionBarrier(apply_gamma_dest, apply_gamma_dest_initial_state,
-@@ -2168,6 +2185,50 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2168,6 +2188,65 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
          uint32_t group_count_y = (guest_output_height + 7) / 8;
          deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
  
@@ -155,15 +169,30 @@ index 19874a5..9c46536 100644
 +                                                      0, &split_source, &split_box);
 +          PushTransitionBarrier(apply_gamma_dest, D3D12_RESOURCE_STATE_COPY_SOURCE,
 +                                apply_gamma_dest_initial_state);
-+          const bool last_view = split_view == rex::system::split_screen::kViewCount - 1;
-+          if (last_view) {
++          split_views_received_ |= uint32_t(1) << split_view;
++          constexpr uint32_t kAllViews = (uint32_t(1) << rex::system::split_screen::kViewCount) - 1;
++          const bool publish = split_view == rex::system::split_screen::kViewCount - 1 &&
++                               split_views_received_ == kAllViews;
++          if (publish) {
 +            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_DEST,
 +                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
 +            PushTransitionBarrier(guest_output_resource,
 +                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState,
 +                                  D3D12_RESOURCE_STATE_COPY_DEST);
 +            SubmitBarriers();
-+            deferred_command_list_.D3DCopyResource(guest_output_resource, composite);
++            // Explicit region: the presenter's image is not guaranteed to be
++            // exactly the composite's size.
++            D3D12_TEXTURE_COPY_LOCATION output_dest = {};
++            output_dest.pResource = guest_output_resource;
++            output_dest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++            D3D12_TEXTURE_COPY_LOCATION composite_source = {};
++            composite_source.pResource = composite;
++            composite_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++            D3D12_BOX composite_box = {
++                0, 0, 0, guest_output_width * rex::system::split_screen::kViewCount,
++                guest_output_height, 1};
++            deferred_command_list_.D3DCopyTextureRegion(&output_dest, 0, 0, 0, &composite_source,
++                                                        &composite_box);
 +            PushTransitionBarrier(guest_output_resource, D3D12_RESOURCE_STATE_COPY_DEST,
 +                                  ui::d3d12::D3D12Presenter::kGuestOutputInternalState);
 +            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -174,14 +203,14 @@ index 19874a5..9c46536 100644
 +          }
 +          SubmitBarriers();
 +          EndSubmission(true);
-+          // Only the last view publishes the composed image.
-+          return last_view;
++          // Only a complete composite is published.
++          return publish;
 +        }
 +
          // Apply FXAA.
          if (use_fxaa) {
            // Destination and source.
-@@ -2256,6 +2317,50 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2256,6 +2335,51 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    EndSubmission(true);
  }
  
@@ -200,6 +229,7 @@ index 19874a5..9c46536 100644
 +    }
 +    split_textures_submission_ = 0;
 +  }
++  split_views_received_ = 0;
 +  const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
 +  ID3D12Device* device = provider.GetDevice();
 +  D3D12_RESOURCE_DESC desc = {};
@@ -233,10 +263,18 @@ index 19874a5..9c46536 100644
    if (REXCVAR_GET(d3d12_submit_on_primary_buffer_end) && submission_open_ &&
        CanEndSubmissionImmediately()) {
 diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
-index 8f2fcb0..8ca4070 100644
+index 8f2fcb0..c5de7ab 100644
 --- a/src/graphics/graphics_system.cpp
 +++ b/src/graphics/graphics_system.cpp
-@@ -58,6 +58,11 @@ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
+@@ -20,6 +20,7 @@
+ #include <utility>
+ 
+ #include <rex/cvar.h>
++#include <rex/system/split_screen.h>
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/kernel/xboxkrnl/video.h>
+@@ -58,6 +59,11 @@ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
  }
  }  // namespace
  
@@ -248,7 +286,7 @@ index 8f2fcb0..8ca4070 100644
  namespace rex::graphics {
  
  // Nvidia Optimus/AMD PowerXpress support.
-@@ -158,10 +163,21 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+@@ -158,10 +164,22 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
              std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
          uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
          uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
@@ -259,7 +297,8 @@ index 8f2fcb0..8ca4070 100644
                REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
 +          // A title presenting several frames per game tick (split screen) needs
 +          // that many vertical blanks per tick to keep its speed.
-+          const int32_t multiplier = REXCVAR_GET(guest_vblank_multiplier);
++          const int32_t multiplier = std::max(REXCVAR_GET(guest_vblank_multiplier),
++                                              rex::system::split_screen::VblankMultiplier());
 +          if (multiplier != last_multiplier) {
 +            REXGPU_INFO("Guest vblank multiplier: {}", multiplier);
 +            last_multiplier = multiplier;
@@ -308,10 +347,10 @@ index fc46d86..707b8be 100644
      util/object_table.cpp
 diff --git a/src/system/split_screen.cpp b/src/system/split_screen.cpp
 new file mode 100644
-index 0000000..1b09aa2
+index 0000000..57ab281
 --- /dev/null
 +++ b/src/system/split_screen.cpp
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,51 @@
 +/**
 + * @file        system/split_screen.cpp
 + * @brief       Tags guest frame swaps for split-screen composition.
@@ -327,6 +366,7 @@ index 0000000..1b09aa2
 +namespace {
 +
 +std::atomic<int32_t> g_next_view{kNoView};
++std::atomic<int32_t> g_vblank_multiplier{1};
 +
 +std::mutex g_mutex;
 +std::deque<int32_t> g_tags;
@@ -354,5 +394,11 @@ index 0000000..1b09aa2
 +  g_tags.pop_front();
 +  return view;
 +}
++
++void SetVblankMultiplier(int32_t multiplier) {
++  g_vblank_multiplier.store(multiplier < 1 ? 1 : multiplier, std::memory_order_relaxed);
++}
++
++int32_t VblankMultiplier() { return g_vblank_multiplier.load(std::memory_order_relaxed); }
 +
 +}  // namespace rex::system::split_screen

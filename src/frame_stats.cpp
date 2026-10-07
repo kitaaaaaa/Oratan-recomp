@@ -29,7 +29,8 @@ REXCVAR_DEFINE_INT32(log_present_stack, 0, "Oratan",
 REX_EXTERN(__imp__sub_822D3180);
 
 namespace oratan {
-void TagSwap();  // local_versus.cpp
+void TagSwap();             // local_versus.cpp
+int32_t CurrentDrawView();  // local_versus.cpp
 }
 
 namespace {
@@ -99,7 +100,9 @@ void LogGuestStack(const PPCContext& ctx, const uint8_t* base) {
 REX_HOOK_RAW(sub_822D3180) {
   static uint32_t frame = 0;
   oratan::CheckWatches(base, frame++);
-  if (REXCVAR_GET(log_fps)) OnFrame();
+  // Count game frames: in split screen each frame is presented once per
+  // view, so only the first view's present counts.
+  if (REXCVAR_GET(log_fps) && oratan::CurrentDrawView() <= 0) OnFrame();
   // Note game mode switches (0 OPEN, 1 GAME, 2 NETVS, 3 CHRSEL, 4 ENDING) in the log.
   static int last_module = -1;
   if (const int module = base[0x839C21BC]; module != last_module) {
