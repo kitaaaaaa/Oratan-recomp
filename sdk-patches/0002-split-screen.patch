@@ -1,8 +1,8 @@
 diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
-index 96d362b..dfd837b 100644
+index 96d362b..b4a9dad 100644
 --- a/include/rex/graphics/d3d12/command_processor.h
 +++ b/include/rex/graphics/d3d12/command_processor.h
-@@ -631,6 +631,20 @@ class D3D12CommandProcessor : public CommandProcessor {
+@@ -631,6 +631,21 @@ class D3D12CommandProcessor : public CommandProcessor {
    Microsoft::WRL::ComPtr<ID3D12Resource> fxaa_source_texture_;
    uint64_t fxaa_source_texture_submission_ = 0;
  
@@ -11,7 +11,8 @@ index 96d362b..dfd837b 100644
 +  // their slot of split_composite_texture_ (all views side by side), which is
 +  // presented once the last view arrives. Both kGuestOutputFormat, kept in
 +  // NON_PIXEL_SHADER_RESOURCE state between swaps. `width` is one view's.
-+  bool EnsureSplitScreenTextures(uint32_t width, uint32_t height);
++  bool EnsureSplitScreenTextures(uint32_t width, uint32_t height, uint32_t canvas_width,
++                                 uint32_t canvas_height);
 +  Microsoft::WRL::ComPtr<ID3D12Resource> split_scratch_texture_;
 +  Microsoft::WRL::ComPtr<ID3D12Resource> split_composite_texture_;
 +  uint64_t split_textures_submission_ = 0;
@@ -25,10 +26,10 @@ index 96d362b..dfd837b 100644
  
 diff --git a/include/rex/system/split_screen.h b/include/rex/system/split_screen.h
 new file mode 100644
-index 0000000..55a9768
+index 0000000..e1ee8c8
 --- /dev/null
 +++ b/include/rex/system/split_screen.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,60 @@
 +/**
 + * @file        system/split_screen.h
 + * @brief       Tags guest frame swaps for split-screen composition.
@@ -73,9 +74,24 @@ index 0000000..55a9768
 +void SetVblankMultiplier(int32_t multiplier);
 +int32_t VblankMultiplier();
 +
++// How the views are arranged in the presented image (runtime state, set by the
++// title from its own settings).
++enum class Layout : int32_t {
++  kSideBySide = 0,  // view 0 left, view 1 right
++  kStaggered = 1,   // view 0 top-left, view 1 bottom-right, other quarters black
++};
++void SetLayout(Layout layout);
++Layout GetLayout();
++
++// When set, untagged swaps are copied into every slot (side by side), so a
++// window spanning one monitor per slot shows the same full-screen image on each
++// (menus, loading screens) instead of one image across the bezel.
++void SetMirrorUntagged(bool mirror);
++bool MirrorUntagged();
++
 +}  // namespace rex::system::split_screen
 diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
-index 19874a5..fe64df7 100644
+index 19874a5..c9945e6 100644
 --- a/src/graphics/d3d12/command_processor.cpp
 +++ b/src/graphics/d3d12/command_processor.cpp
 @@ -9,6 +9,7 @@
@@ -97,39 +113,54 @@ index 19874a5..fe64df7 100644
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
  
-@@ -1985,14 +1990,28 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -1985,14 +1990,43 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
  
-+  if (split_view >= rex::system::split_screen::kViewCount ||
-+      (split_view >= 0 && !EnsureSplitScreenTextures(guest_output_width, guest_output_height))) {
-+    split_view = rex::system::split_screen::kNoView;
++  namespace split_screen = rex::system::split_screen;
++  if (split_view >= split_screen::kViewCount) {
++    split_view = split_screen::kNoView;
 +  }
-+  if (split_view < 0) {
++  // Untagged frames are copied into every slot when mirroring (one window
++  // spanning a monitor per slot); mirroring always uses the side by side layout.
++  const bool split_mirror = split_view < 0 && split_screen::MirrorUntagged();
++  const bool staggered =
++      !split_mirror && split_screen::GetLayout() == split_screen::Layout::kStaggered;
++  // The views keep their full size: side by side makes the presented image
++  // kViewCount times as wide, staggered also that many times as tall (and the
++  // presenter letterboxes it to the window).
++  const uint32_t split_columns = split_screen::kViewCount;
++  const uint32_t split_rows = staggered ? split_screen::kViewCount : 1;
++  bool split = split_view >= 0 || split_mirror;
++  if (split && !EnsureSplitScreenTextures(guest_output_width, guest_output_height,
++                                          guest_output_width * split_columns,
++                                          guest_output_height * split_rows)) {
++    split = false;
++    split_view = split_screen::kNoView;
++  }
++  if (!split || split_mirror) {
 +    split_views_received_ = 0;
 +  }
-+  // The views are placed side by side at full size, so the presented image is
-+  // kViewCount times as wide (and the presenter letterboxes it to the window).
-+  const uint32_t view_count = split_view >= 0 ? rex::system::split_screen::kViewCount : 1;
 +
    presenter->RefreshGuestOutput(
 -      guest_output_width, guest_output_height, display_width, display_height,
-+      guest_output_width * view_count, guest_output_height, display_width * view_count,
-+      display_height,
++      guest_output_width * (split ? split_columns : 1),
++      guest_output_height * (split ? split_rows : 1), display_width * (split ? split_columns : 1),
++      display_height * (split ? split_rows : 1),
        [this, &swap_texture_srv_desc, frontbuffer_format, swap_texture_resource, guest_output_width,
 -       guest_output_height](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
-+       guest_output_height, split_view](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
++       guest_output_height, split_view, split, split_mirror, staggered, split_columns,
++       split_rows](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
          const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
          ID3D12Device* device = provider.GetDevice();
  
 -        SwapPostEffect swap_post_effect = GetActualSwapPostEffect();
-+        const bool split = split_view >= 0;
 +        SwapPostEffect swap_post_effect =
 +            split ? SwapPostEffect::kNone : GetActualSwapPostEffect();
          bool use_fxaa = swap_post_effect == SwapPostEffect::kFxaa ||
                          swap_post_effect == SwapPostEffect::kFxaaExtreme;
          if (use_fxaa) {
-@@ -2115,10 +2134,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2115,10 +2149,11 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
          }
  
          ID3D12Resource* apply_gamma_dest =
@@ -144,12 +175,13 @@ index 19874a5..fe64df7 100644
          static_cast<ui::d3d12::D3D12Presenter::D3D12GuestOutputRefreshContext&>(context)
              .resource_uav_capable();
          PushTransitionBarrier(apply_gamma_dest, apply_gamma_dest_initial_state,
-@@ -2168,6 +2188,65 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2168,6 +2203,72 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
          uint32_t group_count_y = (guest_output_height + 7) / 8;
          deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
  
 +        if (split) {
-+          // Copy this view into its slot of the composite.
++          // Copy this view into its slot of the composite (every slot when
++          // mirroring an untagged frame).
 +          split_textures_submission_ = submission_current_;
 +          ID3D12Resource* composite = split_composite_texture_.Get();
 +          PushTransitionBarrier(apply_gamma_dest, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
@@ -164,15 +196,22 @@ index 19874a5..fe64df7 100644
 +          split_source.pResource = apply_gamma_dest;
 +          split_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 +          D3D12_BOX split_box = {0, 0, 0, guest_output_width, guest_output_height, 1};
-+          deferred_command_list_.D3DCopyTextureRegion(&split_dest,
-+                                                      uint32_t(split_view) * guest_output_width, 0,
-+                                                      0, &split_source, &split_box);
++          for (int32_t slot = 0; slot < rex::system::split_screen::kViewCount; ++slot) {
++            if (!split_mirror && slot != split_view) {
++              continue;
++            }
++            // Staggered: view 0 top-left, view 1 bottom-right.
++            deferred_command_list_.D3DCopyTextureRegion(
++                &split_dest, uint32_t(slot) * guest_output_width,
++                staggered ? uint32_t(slot) * guest_output_height : 0, 0, &split_source, &split_box);
++          }
 +          PushTransitionBarrier(apply_gamma_dest, D3D12_RESOURCE_STATE_COPY_SOURCE,
 +                                apply_gamma_dest_initial_state);
-+          split_views_received_ |= uint32_t(1) << split_view;
 +          constexpr uint32_t kAllViews = (uint32_t(1) << rex::system::split_screen::kViewCount) - 1;
-+          const bool publish = split_view == rex::system::split_screen::kViewCount - 1 &&
-+                               split_views_received_ == kAllViews;
++          split_views_received_ |= split_mirror ? kAllViews : uint32_t(1) << split_view;
++          const bool publish =
++              (split_mirror || split_view == rex::system::split_screen::kViewCount - 1) &&
++              split_views_received_ == kAllViews;
 +          if (publish) {
 +            PushTransitionBarrier(composite, D3D12_RESOURCE_STATE_COPY_DEST,
 +                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -188,9 +227,8 @@ index 19874a5..fe64df7 100644
 +            D3D12_TEXTURE_COPY_LOCATION composite_source = {};
 +            composite_source.pResource = composite;
 +            composite_source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-+            D3D12_BOX composite_box = {
-+                0, 0, 0, guest_output_width * rex::system::split_screen::kViewCount,
-+                guest_output_height, 1};
++            D3D12_BOX composite_box = {0, 0, 0, guest_output_width * split_columns,
++                                       guest_output_height * split_rows, 1};
 +            deferred_command_list_.D3DCopyTextureRegion(&output_dest, 0, 0, 0, &composite_source,
 +                                                        &composite_box);
 +            PushTransitionBarrier(guest_output_resource, D3D12_RESOURCE_STATE_COPY_DEST,
@@ -210,14 +248,18 @@ index 19874a5..fe64df7 100644
          // Apply FXAA.
          if (use_fxaa) {
            // Destination and source.
-@@ -2256,6 +2335,51 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+@@ -2256,6 +2357,58 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
    EndSubmission(true);
  }
  
-+bool D3D12CommandProcessor::EnsureSplitScreenTextures(uint32_t width, uint32_t height) {
++bool D3D12CommandProcessor::EnsureSplitScreenTextures(uint32_t width, uint32_t height,
++                                                      uint32_t canvas_width,
++                                                      uint32_t canvas_height) {
 +  if (split_scratch_texture_) {
 +    D3D12_RESOURCE_DESC existing = split_scratch_texture_->GetDesc();
-+    if (existing.Width == width && existing.Height == height) {
++    D3D12_RESOURCE_DESC existing_canvas = split_composite_texture_->GetDesc();
++    if (existing.Width == width && existing.Height == height &&
++        existing_canvas.Width == canvas_width && existing_canvas.Height == canvas_height) {
 +      return true;
 +    }
 +    for (auto* texture : {std::addressof(split_scratch_texture_), std::addressof(split_composite_texture_)}) {
@@ -243,11 +285,14 @@ index 19874a5..fe64df7 100644
 +  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 +  desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 +  for (auto* texture : {std::addressof(split_scratch_texture_), std::addressof(split_composite_texture_)}) {
-+    desc.Width = texture == std::addressof(split_composite_texture_)
-+                     ? uint64_t(width) * rex::system::split_screen::kViewCount
-+                     : width;
++    const bool is_canvas = texture == std::addressof(split_composite_texture_);
++    desc.Width = is_canvas ? canvas_width : width;
++    desc.Height = is_canvas ? canvas_height : height;
++    // The canvas is zero-initialized so slots no view is copied into (the
++    // staggered layout's other two quarters) stay black.
 +    if (FAILED(device->CreateCommittedResource(
-+            &ui::d3d12::util::kHeapPropertiesDefault, provider.GetHeapFlagCreateNotZeroed(), &desc,
++            &ui::d3d12::util::kHeapPropertiesDefault,
++            is_canvas ? D3D12_HEAP_FLAG_NONE : provider.GetHeapFlagCreateNotZeroed(), &desc,
 +            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
 +            IID_PPV_ARGS(texture->ReleaseAndGetAddressOf())))) {
 +      REXGPU_ERROR("Failed to create the split screen textures");
@@ -347,10 +392,10 @@ index fc46d86..707b8be 100644
      util/object_table.cpp
 diff --git a/src/system/split_screen.cpp b/src/system/split_screen.cpp
 new file mode 100644
-index 0000000..57ab281
+index 0000000..4ad3bf4
 --- /dev/null
 +++ b/src/system/split_screen.cpp
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,61 @@
 +/**
 + * @file        system/split_screen.cpp
 + * @brief       Tags guest frame swaps for split-screen composition.
@@ -367,6 +412,8 @@ index 0000000..57ab281
 +
 +std::atomic<int32_t> g_next_view{kNoView};
 +std::atomic<int32_t> g_vblank_multiplier{1};
++std::atomic<int32_t> g_layout{int32_t(Layout::kSideBySide)};
++std::atomic<bool> g_mirror_untagged{false};
 +
 +std::mutex g_mutex;
 +std::deque<int32_t> g_tags;
@@ -400,5 +447,13 @@ index 0000000..57ab281
 +}
 +
 +int32_t VblankMultiplier() { return g_vblank_multiplier.load(std::memory_order_relaxed); }
++
++void SetLayout(Layout layout) { g_layout.store(int32_t(layout), std::memory_order_relaxed); }
++
++Layout GetLayout() { return Layout(g_layout.load(std::memory_order_relaxed)); }
++
++void SetMirrorUntagged(bool mirror) { g_mirror_untagged.store(mirror, std::memory_order_relaxed); }
++
++bool MirrorUntagged() { return g_mirror_untagged.load(std::memory_order_relaxed); }
 +
 +}  // namespace rex::system::split_screen

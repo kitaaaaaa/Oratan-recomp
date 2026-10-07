@@ -6,6 +6,7 @@
 
 #include <imgui.h>
 
+#include "dual_monitor.h"
 #include "settings.h"
 
 #include <string>
@@ -99,11 +100,25 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   }
   ImGui::TextDisabled("Controller 2 takes over the CPU robot.");
   bool split_screen = rex::cvar::Query<bool>("split_screen");
+  bool split_changed = false;
   if (ImGui::Checkbox("Split screen during battles (experimental)", &split_screen)) {
     rex::cvar::SetFlagByName("split_screen", split_screen ? "true" : "false");
+    split_changed = true;
+  }
+  static const char* kDisplays[] = {"Staggered (one screen)", "Side by side (one screen)",
+                                    "One monitor per player"};
+  int display = rex::cvar::Query<int>("split_display");
+  if (display < 0 || display > 2) display = 0;
+  if (ImGui::Combo("Split display", &display, kDisplays, 3)) {
+    rex::cvar::SetFlagByName("split_display", std::to_string(display));
+    split_changed = true;
+  }
+  if (split_changed) {
+    ApplyDualMonitorWindow(split_screen && display == 2);
     Save();
   }
-  ImGui::TextDisabled("Left: robot 1's view. Right: robot 2's view.");
+  ImGui::TextDisabled(local_versus ? "Robot 1's view, and robot 2's view."
+                                   : "Robot 1's view, and the LIVE MONITOR camera.");
 
   ImGui::Separator();
   ImGui::TextDisabled("Settings are saved automatically.");

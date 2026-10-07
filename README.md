@@ -50,7 +50,10 @@ The Xbox Live Arcade release only had online versus. With two controllers
 connected:
 
 1. Press **F1** and tick **Player 2 controls the opponent** and **Split screen
-   during battles**.
+   during battles**. **Split display** picks the layout: staggered (player 1
+   top-left, player 2 bottom-right), side by side, or one monitor per player
+   (the window spans two side-by-side monitors, like the arcade's twin
+   cabinets).
 2. Start any match (Training or Arcade) with controller 1. Controller 2 takes
    over the opponent robot, and each player gets their own view side by side.
 
@@ -59,7 +62,8 @@ player-controlled Bradtos can't open up to expose its core, so player 1 can't
 win that fight and progress. P2 as Tangram has not been tested.
 
 Unticking **Player 2 controls the opponent** mid-match hands the opponent back
-to the CPU. With split screen on, Arcade's Continue and Game Over screens are
+to the CPU. With split screen on but player 2 control off, the second view
+shows the LIVE MONITOR camera from Observer mode. With split screen on, Arcade's Continue and Game Over screens are
 also shown twice, side by side.
 
 

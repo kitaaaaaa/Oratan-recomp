@@ -27,7 +27,7 @@ struct Managed {
 };
 constexpr Managed kManaged[] = {
     {"resolution_scale", false}, {"fullscreen", false},   {"present_vsync", false},
-    {"local_versus", false},     {"split_screen", false},
+    {"local_versus", false},     {"split_screen", false},     {"split_display", false},
 };
 
 std::string KeyOf(const std::string& line) {

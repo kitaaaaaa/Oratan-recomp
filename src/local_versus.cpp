@@ -36,6 +36,12 @@ REXCVAR_DEFINE_BOOL(split_screen, false, "Oratan",
                     "Experimental: during battles, draw each robot's view and show them "
                     "side by side (left = robot 1, right = robot 2)");
 
+REXCVAR_DEFINE_INT32(split_display, 0, "Oratan",
+                     "Split screen display: 0 staggered on one screen (robot 1 top-left, "
+                     "robot 2 bottom-right), 1 side by side on one screen, 2 one monitor per "
+                     "player (window spans two side-by-side monitors)")
+    .range(0, 2);
+
 REX_EXTERN(__imp__sub_8213CCD0);
 REX_EXTERN(__imp__sub_82123758);
 REX_EXTERN(__imp__sub_822A71B0);
@@ -146,6 +152,12 @@ REX_HOOK_RAW(sub_822A71B0) {
 REX_HOOK_RAW(sub_82123758) {
   const uint32_t game = LoadU32(base, kGamePointer);
   const bool active = REXCVAR_GET(split_screen) && game && IsBattleModule(base);
+  // Layout for the GPU side to compose with (runtime state, cheap to refresh).
+  const int32_t display = REXCVAR_GET(split_display);
+  rex::system::split_screen::SetLayout(display == 0 ? rex::system::split_screen::Layout::kStaggered
+                                                    : rex::system::split_screen::Layout::kSideBySide);
+  // One monitor per player: everything outside split battles is shown on both.
+  rex::system::split_screen::SetMirrorUntagged(REXCVAR_GET(split_screen) && display == 2);
   static int last_state = -1;
   const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (game ? 2 : 0) |
                     (IsBattleModule(base) ? 1 : 0);
@@ -172,8 +184,11 @@ REX_HOOK_RAW(sub_82123758) {
   // callee's signature is not known. Callee-saved registers come back
   // unchanged anyway, so restoring the whole context is a plain repeat call.
   const PPCContext saved_ctx = ctx;
+  // The second view follows robot 2 when player 2 controls it; otherwise it
+  // shows the LIVE MONITOR camera, like the arcade's second cabinet.
+  const uint8_t second_camera = REXCVAR_GET(local_versus) ? 1 : 2;
   for (int32_t view = 0; view < rex::system::split_screen::kViewCount; ++view) {
-    camera = uint8_t(view);
+    camera = view == 0 ? 0 : second_camera;
     g_drawing_view = view;
     ctx = saved_ctx;
     __imp__sub_82123758(ctx, base);

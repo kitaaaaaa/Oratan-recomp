@@ -16,6 +16,7 @@
 
 #include "branding.h"
 #include "debug_tools.h"
+#include "dual_monitor.h"
 #include "fullscreen_toggle.h"
 #include "game_files.h"
 #include "options_menu.h"
@@ -67,6 +68,9 @@ class OratanApp : public rex::ReXApp {
     window()->SetTitle(oratan::kWindowTitle);
     fullscreen_toggle_.Attach(window(), config_path_);
     oratan::RememberStartupSettings();
+    if (rex::cvar::Query<bool>("split_screen") && rex::cvar::Query<int>("split_display") == 2) {
+      oratan::ApplyDualMonitorWindow(true);
+    }
     // Developer: F9 saves a memory snapshot next to the exe (snapshots/).
     rex::ui::RegisterBind("bind_snapshot", "F9", "Save a memory snapshot (developer)", [this] {
       if (!runtime() || !runtime()->memory()) return;
