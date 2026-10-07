@@ -128,6 +128,7 @@ REX_HOOK_RAW(sub_82123758) {
   const uint32_t game = LoadU32(base, kGamePointer);
   const bool active = REXCVAR_GET(split_screen) && game && base[kModuleIndex] == kModuleGame;
   static int last_state = -1;
+  static bool multiplier_set = false;  // guest_vblank_multiplier raised by us
   const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (game ? 2 : 0) |
                     (base[kModuleIndex] == kModuleGame ? 1 : 0);
   if (state != last_state) {
@@ -136,11 +137,13 @@ REX_HOOK_RAW(sub_82123758) {
     last_state = state;
     // The game waits for one vertical blank per presented frame; drawing every
     // view per tick needs that many vblanks per tick to keep normal speed.
-    // Only touched while the option is on, so a manual --guest_vblank_multiplier
-    // still works otherwise.
-    if (REXCVAR_GET(split_screen)) {
+    // Only raised while split, and put back only if raised here, so a manual
+    // --guest_vblank_multiplier still works otherwise. Turning the option off
+    // mid-battle must still put it back, or the game runs at double speed.
+    if (active || multiplier_set) {
       rex::cvar::SetFlagByName("guest_vblank_multiplier",
                                active ? std::to_string(rex::system::split_screen::kViewCount) : "1");
+      multiplier_set = active;
     }
   }
   if (!active) {

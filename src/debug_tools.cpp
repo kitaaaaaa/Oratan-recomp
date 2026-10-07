@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -51,8 +52,14 @@ void ParseWatches(const std::string& spec) {
       spec_item = spec_item.substr(1);
     }
     const size_t plus = spec_item.find('+');
-    w.address = uint32_t(std::stoul(spec_item.substr(0, plus), nullptr, 16));
-    if (plus != std::string::npos) w.offset = uint32_t(std::stoul(spec_item.substr(plus + 1), nullptr, 16));
+    try {
+      w.address = uint32_t(std::stoul(spec_item.substr(0, plus), nullptr, 16));
+      if (plus != std::string::npos) w.offset = uint32_t(std::stoul(spec_item.substr(plus + 1), nullptr, 16));
+    } catch (const std::exception&) {
+      // Thrown from the present hook, this would take the game down.
+      REXLOG_ERROR("watch_u32: ignoring bad entry '{}'", item);
+      continue;
+    }
     g_watches.push_back(w);
   }
 }

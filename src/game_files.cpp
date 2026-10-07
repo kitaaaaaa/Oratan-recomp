@@ -97,6 +97,9 @@ bool CopyEntry(rex::filesystem::Entry* entry, const fs::path& out_path, std::str
     offset += read;
   }
   file->Destroy();
+  // The last buffered write is only flushed here (e.g. a full disk).
+  out.close();
+  ok = ok && !out.fail();
   if (!ok) *error = "cannot write " + out_path.string();
   return ok;
 }
