@@ -153,11 +153,15 @@ REX_HOOK_RAW(sub_82123758) {
   }
   uint8_t& camera = base[game + kCameraOffset];
   const uint8_t saved_camera = camera;
-  const auto saved_r3 = ctx.r3;
+  // Each view's Draw gets the same arguments: the first call can clobber any
+  // volatile register (r3-r12, f0-f13, v0-v19), not just r3, and the
+  // callee's signature is not known. Callee-saved registers come back
+  // unchanged anyway, so restoring the whole context is a plain repeat call.
+  const PPCContext saved_ctx = ctx;
   for (int32_t view = 0; view < rex::system::split_screen::kViewCount; ++view) {
     camera = uint8_t(view);
     g_drawing_view = view;
-    ctx.r3 = saved_r3;
+    ctx = saved_ctx;
     __imp__sub_82123758(ctx, base);
   }
   camera = saved_camera;
@@ -166,8 +170,10 @@ REX_HOOK_RAW(sub_82123758) {
 
 namespace oratan {
 
-// Called right before the game's present issues VdSwap: tags the swap with the
-// view being drawn, one tag per swap (see rex/system/split_screen.h).
-void TagSwap() { rex::system::split_screen::PushSwapTag(g_drawing_view); }
+// Called when the game's present starts, before it issues VdSwap: names the
+// view being drawn. VdSwap queues it with the swap itself, so a present that
+// returns without swapping cannot shift later tags onto the wrong side (see
+// rex/system/split_screen.h).
+void TagSwap() { rex::system::split_screen::SetNextSwapView(g_drawing_view); }
 
 }  // namespace oratan
