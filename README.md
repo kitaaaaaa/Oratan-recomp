@@ -58,14 +58,31 @@ connected:
    over the opponent robot, and each player gets their own view side by side.
 
 Controller 2 also takes over Arcade bosses when they appear such as Ajim, Bradtos and Tangram. A
-player-controlled Bradtos can't open up to expose its core, so player 1 can't
-win that fight and progress. P2 as Tangram has not been tested.
+player-controlled Bradtos can open up to expose its core with a guard-turbo
+attack, though not every time. P2 as Tangram has not been tested.
 
 Unticking **Player 2 controls the opponent** mid-match hands the opponent back
 to the CPU. With split screen on but player 2 control off, the second view
 shows the LIVE MONITOR camera from Observer mode. With split screen on, Arcade's Continue and Game Over screens are
 also shown twice, side by side.
 
+### Hidden stages and Bradtos (Training)
+
+The game has stages and a boss that its menus never offer. In Training:
+
+- **Stage select:** press **LB** or **RB** (or Page Up / Page Down) to switch to
+  a second page. The two slots after RANDOM become **DISTORTED SHRINE** (the
+  mid-boss stage) and **TANGRAM** (the final stage). They have no preview art
+  of their own and show the SANCTUARY 2 and SPACE STATION cards. Press again to
+  switch back.
+- **Character select:** with the cursor on **AJIM**, press **LB** or **RB** to
+  switch that slot to **BRADTOS** (and back). The slot keeps a generic picture
+  while it is BRADTOS. As the CPU opponent, BRADTOS plays its Arcade intro and
+  defeat scenes.
+
+Other unlisted stages and robots (SPACE CARRIER, TANGRAM CORE, the TANGRAM
+robot, and BAL-BADOS' stage forms BAL-KEROS and BAL-BAROS on other stages)
+crash or misbehave and are left out.
 
 ## Status
 
@@ -75,6 +92,7 @@ also shown twice, side by side.
 | Other modes (Score Attack, Customize), saving | Working, minimally tested |
 | Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
 | Local two-player versus with split screen | Working, experimental, see above |
+| Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
 | Xbox Live / System Link | Not yet supported |
 
 ## Building from source

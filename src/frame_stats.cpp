@@ -100,6 +100,8 @@ void LogGuestStack(const PPCContext& ctx, const uint8_t* base) {
 REX_HOOK_RAW(sub_822D3180) {
   static uint32_t frame = 0;
   oratan::CheckWatches(base, frame++);
+  oratan::CaptureIfRequested(base);
+  oratan::InstallCrashReport();
   // Count game frames: in split screen each frame is presented once per
   // view, so only the first view's present counts.
   if (REXCVAR_GET(log_fps) && oratan::CurrentDrawView() <= 0) OnFrame();

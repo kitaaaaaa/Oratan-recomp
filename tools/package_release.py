@@ -47,8 +47,11 @@ Virtual-On Oratorio Tangram (Ver.5.66) - PC recompilation  v{version}
 
 Controls:
   Xbox controllers work as on the console.
-  F1         Options (resolution, VSync, fullscreen)
+  F1         Options (resolution, VSync, fullscreen, local versus)
   Alt+Enter  Switch between fullscreen and a window
+  LB / RB    In Training: on the stage select, show the hidden stages
+             (Distorted Shrine, Tangram); on the character select, with the
+             cursor on AJIM, switch that slot to BRADTOS
 
 Alpha: the game is playable from start to finish. Bug reports and logs are
 welcome at

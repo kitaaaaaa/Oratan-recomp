@@ -23,6 +23,7 @@ set(ORATAN_SOURCES
     src/dual_monitor.cpp
     src/relaunch.cpp
     src/local_versus.cpp
+    src/select_pages.cpp
 )
 
 if(WIN32)
