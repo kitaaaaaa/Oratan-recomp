@@ -20,8 +20,8 @@ included here.
 2. **Add your game** to the `assets` folder inside it (see below).
 3. **Double-click `oratan.exe`.**
 
-Nothing needs to be installed. Windows 10 or 11 (64-bit) with a DirectX 12
-graphics card is required.
+Windows 10 or 11 (64-bit) with a DirectX 12
+graphics card is required. 
 
 ### Adding your game
 
@@ -54,9 +54,10 @@ connected:
 2. Start any match (Training or Arcade) with controller 1. Controller 2 takes
    over the opponent robot, and each player gets their own view side by side.
 
-Controller 2 also takes over Arcade bosses such as Ajim and Bradtos. A
+Controller 2 also takes over Arcade bosses when they appear such as Ajim, Bradtos and Tangram. A
 player-controlled Bradtos can't open up to expose its core, so player 1 can't
-win that fight.
+win that fight and progress. P2 as Tangram has not been tested.
+
 
 ## Status
 
@@ -65,7 +66,7 @@ win that fight.
 | Single player Arcade mode (start to finish) and Training | Working, 60 fps |
 | Other modes (Score Attack, Customize), saving | Working, minimally tested |
 | Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
-| Local two-player versus with split screen | Experimental, see below |
+| Local two-player versus with split screen | Working, experimental, see above |
 | Xbox Live / System Link | Not yet supported |
 
 ## Building from source
