@@ -18,7 +18,8 @@ void DumpGuestImageIfRequested(rex::Runtime* runtime);
 void SaveSnapshot(const uint8_t* base, const std::string& dir);
 
 // Logs the recompiled guest function (and approximate callers) of an access
-// violation the runtime doesn't handle. Install once the runtime is running.
+// violation nothing handles, just before the process dies. Install once the
+// image is loaded.
 void InstallCrashReport();
 
 // With --capture_dir set, F9 saves guest memory for model export. Called once

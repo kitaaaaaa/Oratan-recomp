@@ -8,6 +8,8 @@
 
 #include "settings.h"
 
+#include "dual_monitor.h"
+
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
@@ -15,6 +17,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace oratan {
@@ -28,6 +31,7 @@ struct Managed {
 constexpr Managed kManaged[] = {
     {"resolution_scale", false}, {"fullscreen", false},   {"present_vsync", false},
     {"local_versus", false},     {"split_screen", false},     {"split_display", false},
+    {"split_swap_sides", false}, {"dual_monitor_span", true},
 };
 
 std::string KeyOf(const std::string& line) {
@@ -45,7 +49,12 @@ void SaveSettings(const std::filesystem::path& config_path) {
 
   std::map<std::string, std::string> values;
   for (const auto& m : kManaged) {
-    const std::string value = rex::cvar::GetFlagByName(m.name);
+    std::string value = rex::cvar::GetFlagByName(m.name);
+    // One monitor per player turns SDL's fullscreen off while it is on; keep
+    // the player's own choice in the file.
+    if (std::string_view(m.name) == "fullscreen" && DualMonitorActive()) {
+      value = DualMonitorSavedFullscreen() ? "true" : "false";
+    }
     values[m.name] = m.is_string ? "\"" + value + "\"" : value;
   }
 

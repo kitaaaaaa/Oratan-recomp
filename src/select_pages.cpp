@@ -82,9 +82,16 @@ bool GameHasFocus() {
 bool SwitchPressed(bool& was_down) {
   bool down = false;
   if (auto get = LoadXInput()) {
+    // XInputGetState on an empty slot is slow (it goes looking for a newly
+    // attached device), so empty slots are only rechecked about once a second.
+    static bool connected[4] = {true, true, true, true};
+    static uint32_t polls = 0;
+    const bool recheck = polls++ % 60 == 0;
     for (DWORD pad = 0; pad < 4; ++pad) {
+      if (!connected[pad] && !recheck) continue;
       PadState s{};
-      if (get(pad, &s) == ERROR_SUCCESS && (s.buttons & (0x0100 | 0x0200))) down = true;  // LB/RB
+      connected[pad] = get(pad, &s) == ERROR_SUCCESS;
+      if (connected[pad] && (s.buttons & (0x0100 | 0x0200))) down = true;  // LB/RB
     }
   }
   if (GameHasFocus() && ((GetAsyncKeyState(VK_PRIOR) | GetAsyncKeyState(VK_NEXT)) & 0x8000)) down = true;

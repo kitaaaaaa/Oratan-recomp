@@ -18,6 +18,8 @@
 #include <rex/logging.h>
 #include <rex/system/split_screen.h>
 
+#include "dual_monitor.h"
+
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -41,6 +43,10 @@ REXCVAR_DEFINE_INT32(split_display, 0, "Oratan",
                      "robot 2 bottom-right), 1 side by side on one screen, 2 one monitor per "
                      "player (window spans two side-by-side monitors)")
     .range(0, 2);
+
+REXCVAR_DEFINE_BOOL(split_swap_sides, false, "Oratan",
+                    "Split screen: put robot 1's view on the right (bottom-right when "
+                    "staggered, the right monitor with one monitor per player)");
 
 REX_EXTERN(__imp__sub_8213CCD0);
 REX_EXTERN(__imp__sub_82123758);
@@ -156,8 +162,11 @@ REX_HOOK_RAW(sub_82123758) {
   const int32_t display = REXCVAR_GET(split_display);
   rex::system::split_screen::SetLayout(display == 0 ? rex::system::split_screen::Layout::kStaggered
                                                     : rex::system::split_screen::Layout::kSideBySide);
-  // One monitor per player: everything outside split battles is shown on both.
-  rex::system::split_screen::SetMirrorUntagged(REXCVAR_GET(split_screen) && display == 2);
+  // One monitor per player: everything outside split battles is shown on both
+  // (only once the window really spans two monitors or is the movable window,
+  // so a failed switch on one monitor doesn't halve every menu).
+  rex::system::split_screen::SetMirrorUntagged(REXCVAR_GET(split_screen) &&
+                                               oratan::DualMonitorActive());
   static int last_state = -1;
   const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (game ? 2 : 0) |
                     (IsBattleModule(base) ? 1 : 0);
@@ -186,9 +195,12 @@ REX_HOOK_RAW(sub_82123758) {
   const PPCContext saved_ctx = ctx;
   // The second view follows robot 2 when player 2 controls it; otherwise it
   // shows the LIVE MONITOR camera, like the arcade's second cabinet.
-  const uint8_t second_camera = REXCVAR_GET(local_versus) ? 1 : 2;
+  // Swapping sides only changes which camera each screen slot draws; slot 0 is
+  // still drawn (and presented) first.
+  const uint8_t cameras[2] = {0, uint8_t(REXCVAR_GET(local_versus) ? 1 : 2)};
+  const bool swap = REXCVAR_GET(split_swap_sides);
   for (int32_t view = 0; view < rex::system::split_screen::kViewCount; ++view) {
-    camera = view == 0 ? 0 : second_camera;
+    camera = cameras[swap ? 1 - view : view];
     g_drawing_view = view;
     ctx = saved_ctx;
     __imp__sub_82123758(ctx, base);

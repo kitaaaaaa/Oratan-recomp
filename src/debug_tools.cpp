@@ -115,29 +115,43 @@ uint32_t GuestFunctionAt(uintptr_t host) {
   return host - it->first < 0x200000 ? it->second : 0;
 }
 
-LONG CALLBACK ReportGuestCrash(EXCEPTION_POINTERS* info) {
-  if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
-  const auto* ctx = info->ContextRecord;
-  const uint32_t at = GuestFunctionAt(ctx->Rip);
-  if (!at) return EXCEPTION_CONTINUE_SEARCH;
-  std::string chain;
-  // Return addresses on the host stack that land in recompiled code.
-  const auto* sp = reinterpret_cast<const uintptr_t*>(ctx->Rsp);
-  int found = 0;
-  for (int i = 0; i < 2048 && found < 12; ++i) {
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery(sp + i, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) break;
-    if (const uint32_t g = GuestFunctionAt(sp[i])) {
-      char buf[16];
-      std::snprintf(buf, sizeof(buf), " %08X", g);
-      chain += buf;
-      ++found;
+LPTOP_LEVEL_EXCEPTION_FILTER g_previous_crash_filter = nullptr;
+
+// Unhandled-exception filter: only sees exceptions nothing else handled, so an
+// access violation the game catches itself (guest SEH scopes) or the runtime
+// resolves (MMIO, write watches) is never reported, and this costs nothing
+// until the game is really going down.
+LONG WINAPI ReportGuestCrash(EXCEPTION_POINTERS* info) {
+  if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+    const auto* ctx = info->ContextRecord;
+    if (const uint32_t at = GuestFunctionAt(ctx->Rip)) {
+      std::string chain;
+      // Return addresses on this thread's stack that land in recompiled code.
+      // The filter runs on the faulting thread, so its stack limits bound the
+      // scan.
+      ULONG_PTR low = 0, high = 0;
+      GetCurrentThreadStackLimits(&low, &high);
+      const uintptr_t first = ctx->Rsp & ~uintptr_t(7);
+      if (first >= low && first < high) {
+        const uintptr_t last = std::min<uintptr_t>(high, first + 2048 * sizeof(uintptr_t));
+        int found = 0;
+        for (uintptr_t p = first; p + sizeof(uintptr_t) <= last && found < 12; p += sizeof(uintptr_t)) {
+          if (const uint32_t g = GuestFunctionAt(*reinterpret_cast<const uintptr_t*>(p))) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), " %08X", g);
+            chain += buf;
+            ++found;
+          }
+        }
+      }
+      REXLOG_ERROR(
+          "guest crash: access violation {} 0x{:X} in sub_{:08X} (host rip 0x{:X}); callers "
+          "(approx):{}",
+          info->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
+          info->ExceptionRecord->ExceptionInformation[1], at, ctx->Rip, chain);
     }
   }
-  REXLOG_ERROR("guest crash: access violation {} 0x{:X} in sub_{:08X} (host rip 0x{:X}); callers (approx):{}",
-               info->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
-               info->ExceptionRecord->ExceptionInformation[1], at, ctx->Rip, chain);
-  return EXCEPTION_CONTINUE_SEARCH;
+  return g_previous_crash_filter ? g_previous_crash_filter(info) : EXCEPTION_CONTINUE_SEARCH;
 }
 }  // namespace
 
@@ -149,8 +163,7 @@ void InstallCrashReport() {
     g_host_to_guest.emplace_back(reinterpret_cast<uintptr_t>(m->host), uint32_t(m->guest));
   }
   std::sort(g_host_to_guest.begin(), g_host_to_guest.end());
-  // Last in the chain: the runtime's own handler (MMIO, write watches) runs first.
-  AddVectoredExceptionHandler(0, ReportGuestCrash);
+  g_previous_crash_filter = SetUnhandledExceptionFilter(ReportGuestCrash);
 }
 
 void CaptureIfRequested(const uint8_t* base) {
