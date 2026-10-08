@@ -7,6 +7,7 @@ before building it from source. The release zip ships the patched runtime DLLs.
 |---|---|
 | `0001-present-vsync.patch` | Adds the `present_vsync` setting (F1 → VSync): presents without tearing but never blocks, so the game keeps full speed in fullscreen. The stock SDK always presents with tearing allowed. |
 | `0002-split-screen.patch` | Split screen: the game names the view of its next frame (`rex/system/split_screen.h`), `VdSwap` queues that tag with the swap packet so tags and swaps stay one to one, and the D3D12 backend composes tagged views side by side or staggered (`SetLayout`), publishing only once every view is in; `SetMirrorUntagged` copies single-view frames into every slot for a window spanning two monitors. Also lets a title raise the guest vblank rate at runtime (`SetVblankMultiplier`, never saved) so drawing two frames per tick keeps normal speed; the `guest_vblank_multiplier` setting does the same by hand. |
+| `0003-achievements-ui.patch` | Achievements from the main menu no longer softlock: `XamShowAchievementsUI` (a stub) now reports the system UI as opened and closed right away, so the title stops waiting for a screen that does not exist. |
 
 To build the patched SDK:
 
