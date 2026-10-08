@@ -61,6 +61,7 @@ class OratanApp : public rex::ReXApp {
 
   void OnPostLoadXexImage() override {
     oratan::DumpGuestImageIfRequested(runtime());
+    oratan::InstallCrashReport();
   }
 
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
@@ -68,6 +69,7 @@ class OratanApp : public rex::ReXApp {
     window()->SetTitle(oratan::kWindowTitle);
     fullscreen_toggle_.Attach(window(), config_path_);
     oratan::RememberStartupSettings();
+    oratan::AttachDualMonitorWindow(window());
     if (rex::cvar::Query<bool>("split_screen") && rex::cvar::Query<int>("split_display") == 2) {
       oratan::ApplyDualMonitorWindow(true);
     }
@@ -96,6 +98,7 @@ class OratanApp : public rex::ReXApp {
     rex::ui::UnregisterBind("bind_options");
     rex::ui::UnregisterBind("bind_snapshot");
     options_.reset();
+    oratan::AttachDualMonitorWindow(nullptr);
     fullscreen_toggle_.Detach();
   }
 

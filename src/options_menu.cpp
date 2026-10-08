@@ -80,11 +80,16 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   }
 
   // Display mode
-  bool fullscreen = rex::cvar::Query<bool>("fullscreen");
+  // One monitor per player manages the window itself (Alt+Enter switches it
+  // between spanning and a movable window), so fullscreen waits until it's off.
+  const bool dual_monitor = DualMonitorActive();
+  bool fullscreen = dual_monitor ? DualMonitorSavedFullscreen() : rex::cvar::Query<bool>("fullscreen");
+  ImGui::BeginDisabled(dual_monitor);
   if (ImGui::Checkbox("Fullscreen (Alt+Enter)", &fullscreen)) {
     rex::cvar::SetFlagByName("fullscreen", fullscreen ? "true" : "false");
     Save();
   }
+  ImGui::EndDisabled();
 
   bool vsync = rex::cvar::Query<bool>("present_vsync");
   if (ImGui::Checkbox("VSync", &vsync)) {
@@ -113,8 +118,25 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     rex::cvar::SetFlagByName("split_display", std::to_string(display));
     split_changed = true;
   }
+  // Set when one monitor per player could not be applied (one monitor).
+  static bool dual_monitor_failed = false;
   if (split_changed) {
-    ApplyDualMonitorWindow(split_screen && display == 2);
+    const bool want_dual = split_screen && display == 2;
+    dual_monitor_failed = !ApplyDualMonitorWindow(want_dual) && want_dual;
+    Save();
+  }
+  if (split_screen && display == 2) {
+    if (dual_monitor_failed) {
+      ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                         "Needs a second monitor; pick a one-screen display instead.");
+    } else {
+      ImGui::TextDisabled("Alt+Enter: switch between both monitors and a movable window.");
+      ImGui::TextDisabled("Move the window and press Alt+Enter to use other monitors.");
+    }
+  }
+  bool swap_sides = rex::cvar::Query<bool>("split_swap_sides");
+  if (ImGui::Checkbox("Swap sides (robot 1 on the right)", &swap_sides)) {
+    rex::cvar::SetFlagByName("split_swap_sides", swap_sides ? "true" : "false");
     Save();
   }
   ImGui::TextDisabled(local_versus ? "Robot 1's view, and robot 2's view."

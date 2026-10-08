@@ -14,6 +14,7 @@
 
 #include <filesystem>
 
+#include "dual_monitor.h"
 #include "settings.h"
 
 namespace oratan {
@@ -39,8 +40,13 @@ class FullscreenToggle : public rex::ui::WindowInputListener {
     if (e.virtual_key() != rex::ui::VirtualKey::kReturn || !e.is_alt_pressed()) return;
     e.set_handled(true);
     if (e.prev_state() || !window_) return;  // ignore key repeat
-    // The fullscreen cvar's change callback resizes the window.
-    rex::cvar::SetFlagByName("fullscreen", window_->IsFullscreen() ? "false" : "true");
+    if (oratan::DualMonitorActive()) {
+      // One monitor per player: span two monitors <-> a movable window.
+      oratan::ToggleDualMonitorWindowed();
+    } else {
+      // The fullscreen cvar's change callback resizes the window.
+      rex::cvar::SetFlagByName("fullscreen", window_->IsFullscreen() ? "false" : "true");
+    }
     if (!config_path_.empty()) oratan::SaveSettings(config_path_);
   }
 

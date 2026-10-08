@@ -53,7 +53,11 @@ connected:
    during battles**. **Split display** picks the layout: staggered (player 1
    top-left, player 2 bottom-right), side by side, or one monitor per player
    (the window spans two side-by-side monitors, like the arcade's twin
-   cabinets).
+   cabinets). **Swap sides** puts player 1 on the right.
+   With one monitor per player, **Alt+Enter** switches between spanning the
+   two monitors and a normal window you can move. To use other monitors (say
+   2 and 3 of three), press Alt+Enter, drag the window over them, and press
+   Alt+Enter again. The monitors are remembered.
 2. Start any match (Training or Arcade) with controller 1. Controller 2 takes
    over the opponent robot, and each player gets their own view side by side.
 
