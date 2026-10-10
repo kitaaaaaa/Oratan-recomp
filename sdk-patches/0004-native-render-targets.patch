@@ -1,0 +1,1705 @@
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index b4a9dad..40c91d2 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -26,6 +26,7 @@
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/d3d12/deferred_command_list.h>
+ #include <rex/graphics/d3d12/graphics_system.h>
++#include <rex/graphics/d3d12/native_textures.h>
+ #include <rex/graphics/d3d12/pipeline_cache.h>
+ #include <rex/graphics/d3d12/primitive_processor.h>
+ #include <rex/graphics/d3d12/render_target_cache.h>
+@@ -78,6 +79,12 @@ class D3D12CommandProcessor : public CommandProcessor {
+   }
+ 
+   uint64_t GetCurrentFrame() const { return frame_current_; }
++
++  // Native render-target mode (nullptr when off).
++  NativeTextures* GetNativeTextures() const { return native_textures_.get(); }
++  D3D12TextureCache& GetTextureCache() const { return *texture_cache_; }
++  float GetNativeDrawScaleX() const { return native_draw_scale_[0]; }
++  float GetNativeDrawScaleY() const { return native_draw_scale_[1]; }
+   uint64_t GetCompletedFrame() const { return frame_completed_; }
+ 
+   // Returns true if the barrier has been inserted (the new state is different).
+@@ -551,6 +558,8 @@ class D3D12CommandProcessor : public CommandProcessor {
+   std::unique_ptr<PipelineCache> pipeline_cache_;
+ 
+   std::unique_ptr<D3D12TextureCache> texture_cache_;
++  std::unique_ptr<NativeTextures> native_textures_;
++  float native_draw_scale_[2] = {1.0f, 1.0f};
+ 
+   // Bytes 0x0...0x3FF - 256-entry gamma ramp table with B10G10R10X2 data (read
+   // as R10G10B10X2 with swizzle).
+diff --git a/include/rex/graphics/d3d12/native_textures.h b/include/rex/graphics/d3d12/native_textures.h
+new file mode 100644
+index 0000000..3d317e7
+--- /dev/null
++++ b/include/rex/graphics/d3d12/native_textures.h
+@@ -0,0 +1,157 @@
++/**
++ * Native render-target mode (Oratan-recomp).
++ *
++ * Resolves are copied on the host, at the render target's own resolution, into
++ * "native textures" keyed by their guest destination address, instead of being
++ * written to guest memory. Draws that sample one of those addresses bind the
++ * native texture. Nothing is written back to guest memory: the CPU never reads
++ * resolve results in this game (d3d12_readback_resolve is off by default).
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++#include <rex/cvar.h>
++#include <rex/graphics/xenos.h>
++#include <rex/ui/d3d12/d3d12_api.h>
++
++REXCVAR_DECLARE(bool, native_render_targets);
++REXCVAR_DECLARE(int32_t, native_resolution);
++REXCVAR_DECLARE(int32_t, native_msaa);
++
++namespace rex::graphics::d3d12 {
++
++class D3D12CommandProcessor;
++
++class NativeTextures {
++ public:
++  explicit NativeTextures(D3D12CommandProcessor& command_processor)
++      : command_processor_(command_processor) {}
++  ~NativeTextures() { Shutdown(); }
++
++  bool Initialize();
++  void Shutdown();
++
++  // The render target a resolve reads. The caller transitions the resource to
++  // a shader resource state before Resolve and back afterwards.
++  struct Source {
++    ID3D12Resource* resource = nullptr;
++    D3D12_CPU_DESCRIPTOR_HANDLE srv = {};
++    D3D12_CPU_DESCRIPTOR_HANDLE srv_stencil = {};  // ptr 0 if none
++    // Colour: view format to read the render target as floats with (the
++    // render target's own SRV may be a bit-exact integer view).
++    DXGI_FORMAT color_view_format = DXGI_FORMAT_UNKNOWN;
++    uint32_t samples = 1;
++    bool is_depth = false;
++    // Host pixels per guest pixel of the render target.
++    float scale_x = 1.0f, scale_y = 1.0f;
++  };
++  struct Copy {
++    // Guest pixels in the render target (window offset applied), exclusive end.
++    int32_t x0, y0, x1, y1;
++    // Destination: the base adjusted to the rectangle's 32x32 tile (as in
++    // draw_util::ResolveInfo::copy_dest_base) and the rectangle's offset
++    // within that tile, in guest pixels.
++    uint32_t dest_base;
++    uint32_t dest_x, dest_y;
++    uint32_t dest_pitch, dest_height;
++    xenos::TextureFormat dest_format;
++    uint32_t sample_select;  // xenos::CopySampleSelect
++    int32_t exp_bias;
++    bool swap_rb;
++  };
++  bool Resolve(const Source& source, const Copy& copy);
++
++  // Bindless descriptor index of the native texture for a texture fetch, or
++  // UINT32_MAX if the address isn't a native texture.
++  // draw_scale: the scale of the render target being drawn (a lower one gets a
++  // box-filtered copy of a higher resolution texture).
++  uint32_t GetBindlessSRV(uint32_t base_address, uint32_t width, uint32_t height,
++                          DXGI_FORMAT view_format, uint32_t host_swizzle, float draw_scale_x,
++                          float draw_scale_y);
++  // Set when this class bound its own render targets / pipeline during
++  // binding; the render target cache must rebind.
++  bool TakeRenderTargetsInvalidated() {
++    bool invalidated = render_targets_invalidated_;
++    render_targets_invalidated_ = false;
++    return invalidated;
++  }
++  // For presenting the front buffer.
++  ID3D12Resource* GetSwapTexture(uint32_t address, uint32_t width, uint32_t height,
++                                 D3D12_SHADER_RESOURCE_VIEW_DESC& srv_desc_out);
++
++  bool active() const { return !textures_.empty(); }
++
++  // Resource state native textures are kept in between resolves.
++  static constexpr D3D12_RESOURCE_STATES kReadState =
++      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++
++ private:
++  struct Texture {
++    uint32_t base;
++    uint32_t pitch, height;  // guest pixels
++    uint32_t bytes;          // guest memory span
++    xenos::TextureFormat format;
++    uint32_t bpp_log2;
++    DXGI_FORMAT resource_format, rtv_format;
++    float scale_x, scale_y;
++    uint32_t host_width, host_height;
++    ID3D12Resource* resource = nullptr;
++    uint32_t rtv_index = UINT32_MAX;
++    uint64_t version = 0;
++    // (view format << 32 | swizzle) -> bindless descriptor.
++    std::unordered_map<uint64_t, uint32_t> srvs;
++  };
++  // A texture sampled at a sub-rectangle of a native texture (different base or
++  // smaller size): a copy refreshed when the source changes.
++  struct Derived {
++    Texture texture;
++    uint32_t source_base;
++    uint32_t offset_x, offset_y;  // guest pixels in the source
++    uint64_t source_version = UINT64_MAX;
++  };
++
++  Texture* FindContaining(uint32_t address, uint32_t pitch, xenos::TextureFormat format,
++                          uint32_t& offset_x_out, uint32_t& offset_y_out);
++  Texture* FindForSampling(uint32_t address, uint32_t& offset_x_out, uint32_t& offset_y_out);
++  bool CreateTexture(Texture& texture);
++  void DestroyTexture(Texture& texture);
++  void ReleaseCompleted(bool all);
++  uint32_t GetSRV(Texture& texture, DXGI_FORMAT view_format, uint32_t host_swizzle);
++  Texture* GetReduced(Texture& source, float scale_x, float scale_y);
++  ID3D12PipelineState* GetPipeline(DXGI_FORMAT rtv_format, uint32_t samples, bool is_depth);
++
++  D3D12CommandProcessor& command_processor_;
++  bool initialized_ = false;
++
++  std::unordered_map<uint32_t, Texture> textures_;  // by base
++  std::unordered_map<uint64_t, Derived> derived_;   // by base << 32 | width << 16 | height
++  std::unordered_map<uint64_t, Derived> reduced_;   // by base << 32 | scale * 64
++  bool render_targets_invalidated_ = false;
++  // Sampled address inside a native texture -> that texture (base 0: none).
++  struct SamplingEntry {
++    uint32_t base, x, y;
++  };
++  std::unordered_map<uint32_t, SamplingEntry> sampling_cache_;
++
++  ID3D12DescriptorHeap* rtv_heap_ = nullptr;
++  uint32_t rtv_descriptor_size_ = 0;
++  std::vector<uint32_t> rtv_free_;
++  uint32_t rtv_allocated_ = 0;
++  static constexpr uint32_t kRTVCount = 2048;
++
++  std::vector<std::pair<uint64_t, ID3D12Resource*>> graveyard_;
++
++  ID3D12RootSignature* root_signature_ = nullptr;
++  std::vector<uint8_t> vs_;
++  std::vector<uint8_t> ps_color_[3];  // 1, 2, 4 samples
++  std::vector<uint8_t> ps_depth_[3];
++  std::vector<uint8_t> ps_reduce_;
++  std::unordered_map<uint64_t, ID3D12PipelineState*> pipelines_;
++};
++
++}  // namespace rex::graphics::d3d12
+diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
+index cd7693a..4965509 100644
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -62,9 +62,44 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
+   void InvalidateCommandListRenderTargets() {
+     are_current_command_list_render_targets_valid_ = false;
+   }
++  // After something else bound render targets in the middle of a draw's setup.
++  void RebindCommandListRenderTargets() {
++    are_current_command_list_render_targets_valid_ = false;
++    SetCommandListRenderTargets(last_update_accumulated_render_targets());
++  }
+ 
+   bool msaa_2x_supported() const { return msaa_2x_supported_; }
+ 
++  void GetNativeScale(RenderTargetKey key, float& x_out, float& y_out) const override;
++  // Native mode: host sample count of a render target (the anti-aliasing
++  // option applies to scaled render targets the game multisamples).
++  xenos::MsaaSamples GetNativeHostMsaa(RenderTargetKey key) const;
++  // For the pipeline of the current draw.
++  xenos::MsaaSamples GetCurrentNativeHostMsaa(xenos::MsaaSamples guest_msaa) const {
++    if (!native_render_targets_) {
++      return guest_msaa;
++    }
++    RenderTarget* const* bound = last_update_accumulated_render_targets();
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (bound[i]) {
++        return GetNativeHostMsaa(bound[i]->key());
++      }
++    }
++    return guest_msaa;
++  }
++  bool native_render_targets() const { return native_render_targets_; }
++  // Native scale of the render targets bound by the last Update (1 if none).
++  void GetCurrentNativeScale(float& x_out, float& y_out) const {
++    x_out = y_out = 1.0f;
++    RenderTarget* const* bound = last_update_accumulated_render_targets();
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (bound[i]) {
++        GetNativeScale(bound[i]->key(), x_out, y_out);
++        return;
++      }
++    }
++  }
++
+   void WriteEdramRawSRVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle);
+   void WriteEdramRawUAVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle);
+   void WriteEdramUintPow2SRVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle,
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..833eea9 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -33,6 +33,7 @@ namespace rex::graphics::d3d12 {
+ class D3D12CommandProcessor;
+ 
+ class D3D12TextureCache final : public TextureCache {
++  friend class NativeTextures;
+  public:
+   // Keys that can be stored for checking validity whether descriptors for host
+   // shader bindings are up to date.
+@@ -111,6 +112,10 @@ class D3D12TextureCache final : public TextureCache {
+                                  size_t host_shader_binding_count) const;
+   void WriteActiveTextureBindfulSRV(const D3D12Shader::TextureBinding& host_shader_binding,
+                                     D3D12_CPU_DESCRIPTOR_HANDLE handle);
++  // Native render-target mode: does any copies / reductions native textures
++  // bound by these bindings need, before the guest draw state is set.
++  void PrepareNativeTextures(const std::vector<D3D12Shader::TextureBinding>& host_shader_bindings);
++  uint32_t GetNativeBindlessSRVIndex(const D3D12Shader::TextureBinding& host_shader_binding);
+   uint32_t GetActiveTextureBindlessSRVIndex(const D3D12Shader::TextureBinding& host_shader_binding);
+ 
+   SamplerParameters GetSamplerParameters(const D3D12Shader::SamplerBinding& binding) const;
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+index 3bbd52e..de13084 100644
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -233,6 +233,10 @@ class RenderTargetCache {
+       uint32_t is_depth : 1;                                      // 22
+       // Ignoring the blending precision and sRGB.
+       uint32_t resource_format : xenos::kRenderTargetFormatBits;  // 26
++      // Native render-target mode: separates uses of the same EDRAM layout
++      // that need different host scales (1 = drawn with depth / stencil, like
++      // Oratorio Tangram's shadow mask, kept 1x).
++      uint32_t native_class : 1;  // 27
+     };
+ 
+     RenderTargetKey() : key(0) { static_assert_size(*this, sizeof(key)); }
+@@ -548,6 +552,43 @@ class RenderTargetCache {
+   // EDRAM memory are committed with a memory barrier.
+   void PixelShaderInterlockFullEdramBarrierPlaced();
+ 
++  // Native render-target mode (Oratan-recomp): EDRAM ownership is still
++  // tracked (resolve clears use it) but no contents are transferred between
++  // render targets sharing EDRAM - each render target is its own host texture.
++  bool native_render_targets_ = false;
++  // Native mode: the class of the colour render target last drawn with this
++  // key (without the class bit).
++  std::unordered_map<uint32_t, uint32_t> native_last_class_;
++  uint32_t GetNativeLastClass(RenderTargetKey key) const {
++    key.native_class = 0;
++    auto it = native_last_class_.find(key.key);
++    return it != native_last_class_.end() ? it->second : 0;
++  }
++  RenderTarget* FindRenderTarget(RenderTargetKey key) const {
++    auto it = render_targets_.find(key);
++    return it != render_targets_.end() ? it->second : nullptr;
++  }
++  // Host pixels per guest pixel of a render target in native mode.
++  virtual void GetNativeScale(RenderTargetKey key, float& x_out, float& y_out) const {
++    x_out = float(draw_resolution_scale_x_);
++    y_out = float(draw_resolution_scale_y_);
++  }
++  template <typename TransferVector>
++  void FilterNativeTransfers(RenderTargetKey dest, TransferVector& transfers) const {
++    float dx, dy;
++    GetNativeScale(dest, dx, dy);
++    transfers.erase(std::remove_if(transfers.begin(), transfers.end(),
++                                   [&](const Transfer& transfer) {
++                                     float sx, sy;
++                                     GetNativeScale(transfer.source->key(), sx, sy);
++                                     return sx != dx || sy != dy || dx != float(draw_resolution_scale_x_) ||
++                                            dy != float(draw_resolution_scale_y_);
++                                   }),
++                    transfers.end());
++  }
++  xenos::ColorRenderTargetFormat GetNativeColorResourceFormat(xenos::ColorRenderTargetFormat format) const {
++    return GetColorResourceFormat(format);
++  }
+  private:
+   const RegisterFile& register_file_;
+   uint32_t draw_resolution_scale_x_;
+diff --git a/include/rex/graphics/util/draw.h b/include/rex/graphics/util/draw.h
+index 3da182d..ef1b925 100644
+--- a/include/rex/graphics/util/draw.h
++++ b/include/rex/graphics/util/draw.h
+@@ -500,6 +500,8 @@ struct ResolveInfo {
+   // copy_dest_coordinate_info.offset_x/y_div_8 - the origin of the copy
+   // destination - is relative to.
+   uint32_t copy_dest_base;
++  // Resolve rectangle in surface pixels (window offset applied), exclusive end.
++  int32_t rect_x0, rect_y0, rect_x1, rect_y1;
+   // Memory range that will potentially be modified by copying to the texture.
+   // copy_dest_extent_length may be zero if something is wrong with the
+   // destination, in this case, clearing may still be done, but copying must be
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 0d8f8af..3d26895 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -76,6 +76,7 @@ if(REXGLUE_USE_D3D12)
+         d3d12/graphics_system.cpp
+         d3d12/command_processor.cpp
+         d3d12/primitive_processor.cpp
++        d3d12/native_textures.cpp
+         d3d12/render_target_cache.cpp
+         d3d12/shader.cpp
+         d3d12/shared_memory.cpp
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index c9945e6..e812153 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/system/split_screen.h>
+ #include <algorithm>
++#include <cmath>
+ #include <cstdarg>
+ #include <cstring>
+ #include <sstream>
+@@ -22,6 +23,7 @@
+ #include <rex/perf/counter.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/graphics_system.h>
++#include <rex/graphics/d3d12/native_textures.h>
+ #include <rex/graphics/d3d12/shader.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/registers.h>
+@@ -48,6 +50,15 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
+                     "Submit command list when PM4 primary buffer ends")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DEFINE_BOOL(native_render_targets, false, "GPU/D3D12",
++                    "Native render targets: resolves become host copies at any resolution instead "
++                    "of EDRAM emulation (Oratan-recomp renderer rework)");
++REXCVAR_DEFINE_INT32(native_resolution, 0, "GPU/D3D12",
++                     "Native render targets: output height (1080 = exactly 1920x1080; 0 = 1x)");
++REXCVAR_DEFINE_INT32(native_msaa, 0, "GPU/D3D12",
++                     "Native render targets: anti-aliasing of the 3D scene (0 = game's own 4x, "
++                     "1 = off, 2 = 2x, 4 = 4x)");
++
+ namespace rex::graphics::d3d12 {
+ 
+ // Generated with `xb buildshaders`.
+@@ -915,6 +926,10 @@ bool D3D12CommandProcessor::SetupContext() {
+   uint32_t draw_resolution_scale_x, draw_resolution_scale_y;
+   bool draw_resolution_scale_not_clamped =
+       TextureCache::GetConfigDrawResolutionScale(draw_resolution_scale_x, draw_resolution_scale_y);
++  if (REXCVAR_GET(native_render_targets)) {
++    // Native render targets scale per render target instead.
++    draw_resolution_scale_x = draw_resolution_scale_y = 1;
++  }
+   if (!D3D12TextureCache::ClampDrawResolutionScaleToMaxSupported(
+           draw_resolution_scale_x, draw_resolution_scale_y, provider)) {
+     draw_resolution_scale_not_clamped = false;
+@@ -934,6 +949,13 @@ bool D3D12CommandProcessor::SetupContext() {
+ 
+   // Initialize the render target cache before configuring binding - need to
+   // know if using rasterizer-ordered views for the bindless root signature.
++  if (REXCVAR_GET(native_render_targets) && bindless_resources_used_) {
++    native_textures_ = std::make_unique<NativeTextures>(*this);
++    if (!native_textures_->Initialize()) {
++      REXGPU_ERROR("Native render targets unavailable, using EDRAM emulation");
++      native_textures_.reset();
++    }
++  }
+   render_target_cache_ = std::make_unique<D3D12RenderTargetCache>(
+       *register_file_, *memory_, draw_resolution_scale_x, draw_resolution_scale_y, *this,
+       bindless_resources_used_);
+@@ -1700,6 +1722,7 @@ void D3D12CommandProcessor::ShutdownContext() {
+   gamma_ramp_upload_buffer_.Reset();
+   gamma_ramp_buffer_.Reset();
+ 
++  native_textures_.reset();
+   texture_cache_.reset();
+ 
+   pipeline_cache_.reset();
+@@ -2521,6 +2544,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+                                     normalized_color_mask, *vertex_shader)) {
+     return false;
+   }
++  native_draw_scale_[0] = native_draw_scale_[1] = 1.0f;
++  if (native_textures_ && render_target_cache_->native_render_targets()) {
++    render_target_cache_->GetCurrentNativeScale(native_draw_scale_[0], native_draw_scale_[1]);
++  }
+ 
+   // Create the pipeline (for this, need the actually used render target formats
+   // from the render target cache), translating the shaders - doing this now to
+@@ -2561,6 +2588,17 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+       vertex_shader->GetUsedTextureMaskAfterTranslation() |
+       (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
+   texture_cache_->RequestTextures(used_texture_mask);
++  if (native_textures_ && native_textures_->active()) {
++    // Native textures may need copies or box-filtered versions for this draw,
++    // which use their own render targets - before the guest state is set.
++    texture_cache_->PrepareNativeTextures(vertex_shader->GetTextureBindingsAfterTranslation());
++    if (pixel_shader) {
++      texture_cache_->PrepareNativeTextures(pixel_shader->GetTextureBindingsAfterTranslation());
++    }
++    if (native_textures_->TakeRenderTargetsInvalidated()) {
++      render_target_cache_->RebindCommandListRenderTargets();
++    }
++  }
+ 
+   // Bind the pipeline after configuring it and doing everything that may bind
+   // other pipelines.
+@@ -2593,11 +2631,16 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+                        (uint32_t(host_render_targets_used) << 1) | (uint32_t(ps_writes_depth) << 2);
+ 
+   draw_util::ViewportInfo viewport_info;
++  // Native render targets scale the viewport afterwards: keep the scaled
++  // bounds within the host limit (draws without a viewport use the maximum).
++  uint32_t viewport_x_max = uint32_t(float(D3D12_VIEWPORT_BOUNDS_MAX) / native_draw_scale_[0]);
++  uint32_t viewport_y_max = uint32_t(float(D3D12_VIEWPORT_BOUNDS_MAX) / native_draw_scale_[1]);
++  viewport_key.flags |= (viewport_x_max << 3) ^ (viewport_y_max << 18);
+   if (viewport_cache_valid_ && viewport_key == previous_viewport_key_) {
+     viewport_info = previous_viewport_info_;
+   } else {
+     draw_util::GetHostViewportInfo(regs, draw_resolution_scale_x, draw_resolution_scale_y, true,
+-                                   D3D12_VIEWPORT_BOUNDS_MAX, D3D12_VIEWPORT_BOUNDS_MAX, false,
++                                   viewport_x_max, viewport_y_max, false,
+                                    normalized_depth_control, convert_z_to_float24,
+                                    host_render_targets_used, ps_writes_depth, viewport_info);
+     previous_viewport_key_ = viewport_key;
+@@ -3678,21 +3721,23 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+ 
+   // Viewport.
++  // Native render targets have their own (possibly fractional) scale.
++  float scale_x = native_draw_scale_[0], scale_y = native_draw_scale_[1];
+   D3D12_VIEWPORT viewport;
+-  viewport.TopLeftX = float(viewport_info.xy_offset[0]);
+-  viewport.TopLeftY = float(viewport_info.xy_offset[1]);
+-  viewport.Width = float(viewport_info.xy_extent[0]);
+-  viewport.Height = float(viewport_info.xy_extent[1]);
++  viewport.TopLeftX = float(viewport_info.xy_offset[0]) * scale_x;
++  viewport.TopLeftY = float(viewport_info.xy_offset[1]) * scale_y;
++  viewport.Width = float(viewport_info.xy_extent[0]) * scale_x;
++  viewport.Height = float(viewport_info.xy_extent[1]) * scale_y;
+   viewport.MinDepth = viewport_info.z_min;
+   viewport.MaxDepth = viewport_info.z_max;
+   SetViewport(viewport);
+ 
+   // Scissor.
+   D3D12_RECT scissor_rect;
+-  scissor_rect.left = LONG(scissor.offset[0]);
+-  scissor_rect.top = LONG(scissor.offset[1]);
+-  scissor_rect.right = LONG(scissor.offset[0] + scissor.extent[0]);
+-  scissor_rect.bottom = LONG(scissor.offset[1] + scissor.extent[1]);
++  scissor_rect.left = LONG(std::floor(float(scissor.offset[0]) * scale_x));
++  scissor_rect.top = LONG(std::floor(float(scissor.offset[1]) * scale_y));
++  scissor_rect.right = LONG(std::ceil(float(scissor.offset[0] + scissor.extent[0]) * scale_x));
++  scissor_rect.bottom = LONG(std::ceil(float(scissor.offset[1] + scissor.extent[1]) * scale_y));
+   SetScissorRect(scissor_rect);
+ 
+   if (render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets) {
+@@ -4542,6 +4587,12 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+       }
+     }
+ 
++    if (native_textures_ && native_textures_->active()) {
++      // Native textures can appear for an address without the fetch constant
++      // changing.
++      cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
++      cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
++    }
+     if (!cbuffer_binding_descriptor_indices_vertex_.up_to_date) {
+       uint32_t* descriptor_indices = reinterpret_cast<uint32_t*>(constant_buffer_pool_->Request(
+           frame_current_,
+diff --git a/src/graphics/d3d12/native_textures.cpp b/src/graphics/d3d12/native_textures.cpp
+new file mode 100644
+index 0000000..b4a168f
+--- /dev/null
++++ b/src/graphics/d3d12/native_textures.cpp
+@@ -0,0 +1,805 @@
++/**
++ * Native render-target mode (Oratan-recomp). See native_textures.h.
++ */
++
++#include <rex/graphics/d3d12/native_textures.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++
++#include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/d3d12/texture_cache.h>
++#include <rex/graphics/pipeline/texture/info.h>
++#include <rex/graphics/pipeline/texture/util.h>
++#include <rex/logging.h>
++#include <rex/math.h>
++#include <rex/ui/d3d12/d3d12_util.h>
++
++namespace rex::graphics::d3d12 {
++
++namespace {
++
++// Root constants (b0), see Resolve.
++struct ResolveConstants {
++  float src_origin[2];  // source host pixel at the destination rectangle origin
++  float src_step[2];    // source host pixels per destination host pixel
++  float dst_origin[2];  // destination rectangle origin, host pixels
++  uint32_t sample_select;
++  float exp_scale;
++  uint32_t swap_rb;
++  float inv_src_size[2];  // reduction: 1 / source host size
++  uint32_t pad;
++};
++static_assert(sizeof(ResolveConstants) == 48);
++
++const char kShaderSource[] = R"(
++cbuffer C : register(b0) {
++  float2 src_origin;
++  float2 src_step;
++  float2 dst_origin;
++  uint sample_select;
++  float exp_scale;
++  uint swap_rb;
++  float2 inv_src_size;
++};
++Texture2D<float4> reduce_src : register(t0);
++SamplerState linear_clamp : register(s0);
++// Box filter of the source footprint of one destination pixel (4x4 bilinear
++// taps), so a draw at a lower scale sees an average like the original did.
++float4 PSReduce(float4 pos : SV_Position) : SV_Target {
++  float2 base = floor(pos.xy) * src_step;
++  float4 sum = 0.0;
++  [unroll] for (uint y = 0; y < 4; ++y) {
++    [unroll] for (uint x = 0; x < 4; ++x) {
++      float2 p = base + (float2(x, y) + 0.5) * 0.25 * src_step;
++      sum += reduce_src.SampleLevel(linear_clamp, p * inv_src_size, 0.0);
++    }
++  }
++  return sum * (1.0 / 16.0);
++}
++float4 VSMain(uint id : SV_VertexID) : SV_Position {
++  float2 uv = float2((id << 1) & 2, id & 2);
++  return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
++}
++int2 SourcePixel(float4 pos) {
++  return int2(floor(src_origin + (pos.xy - dst_origin) * src_step));
++}
++#if SAMPLES == 1
++Texture2D<float4> src_color : register(t0);
++Texture2D<float> src_depth : register(t0);
++Texture2D<uint2> src_stencil : register(t1);
++float4 LoadColor(int2 p, uint s) { return src_color.Load(int3(p, 0)); }
++float LoadDepth(int2 p, uint s) { return src_depth.Load(int3(p, 0)); }
++uint LoadStencil(int2 p, uint s) { return src_stencil.Load(int3(p, 0)).g; }
++#else
++Texture2DMS<float4> src_color : register(t0);
++Texture2DMS<float> src_depth : register(t0);
++Texture2DMS<uint2> src_stencil : register(t1);
++float4 LoadColor(int2 p, uint s) { return src_color.Load(p, s); }
++float LoadDepth(int2 p, uint s) { return src_depth.Load(p, s); }
++uint LoadStencil(int2 p, uint s) { return src_stencil.Load(p, s).g; }
++#endif
++float4 PSColor(float4 pos : SV_Position) : SV_Target {
++  int2 p = SourcePixel(pos);
++  float4 c;
++  // xenos::CopySampleSelect: 0-3 one sample, 4 = 0+1, 5 = 2+3, 6 = all four.
++  if (sample_select == 6 && SAMPLES >= 4) {
++    c = (LoadColor(p, 0) + LoadColor(p, 1) + LoadColor(p, 2) + LoadColor(p, 3)) * 0.25;
++  } else if ((sample_select == 4 || sample_select == 6) && SAMPLES >= 2) {
++    // Averaging all samples of a 2x render target (anti-aliasing option).
++    c = (LoadColor(p, 0) + LoadColor(p, 1)) * 0.5;
++  } else if (sample_select == 5 && SAMPLES >= 4) {
++    c = (LoadColor(p, 2) + LoadColor(p, 3)) * 0.5;
++  } else {
++    c = LoadColor(p, min(sample_select & 3, SAMPLES - 1));
++  }
++  c *= exp_scale;
++  return swap_rb ? c.bgra : c;
++}
++// Depth / stencil as the 32-bit D24S8 word (depth << 8 | stencil), read back
++// as k_8_8_8_8: R = stencil, G/B/A = depth bits 0-7 / 8-15 / 16-23.
++float4 PSDepth(float4 pos : SV_Position) : SV_Target {
++  int2 p = SourcePixel(pos);
++  uint s = min(sample_select & 3, SAMPLES - 1);
++  uint d24 = uint(round(saturate(LoadDepth(p, s)) * 16777215.0));
++  uint st = HAS_STENCIL ? LoadStencil(p, s) : 0u;
++  return float4(st, d24 & 0xFF, (d24 >> 8) & 0xFF, d24 >> 16) * (1.0 / 255.0);
++}
++)";
++
++bool Compile(pD3DCompile compile, const char* entry, const char* target, uint32_t samples,
++             bool has_stencil, std::vector<uint8_t>& out) {
++  char samples_text[8], stencil_text[8];
++  std::snprintf(samples_text, sizeof(samples_text), "%u", samples);
++  std::snprintf(stencil_text, sizeof(stencil_text), "%u", uint32_t(has_stencil));
++  D3D_SHADER_MACRO defines[] = {{"SAMPLES", samples_text}, {"HAS_STENCIL", stencil_text}, {}};
++  ID3DBlob* blob = nullptr;
++  ID3DBlob* errors = nullptr;
++  HRESULT hr = compile(kShaderSource, sizeof(kShaderSource) - 1, "native_textures", defines, nullptr,
++                       entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &errors);
++  if (FAILED(hr)) {
++    REXGPU_ERROR("NativeTextures: compiling {} failed: {}", entry,
++                 errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?");
++    if (errors) errors->Release();
++    return false;
++  }
++  if (errors) errors->Release();
++  const uint8_t* p = static_cast<const uint8_t*>(blob->GetBufferPointer());
++  out.assign(p, p + blob->GetBufferSize());
++  blob->Release();
++  return true;
++}
++
++uint32_t SamplesIndex(uint32_t samples) { return samples >= 4 ? 2 : (samples >= 2 ? 1 : 0); }
++
++// The typeless family of the DXGI formats native textures use, so a texture
++// can be sampled through a different but bit-compatible view format.
++DXGI_FORMAT Family(DXGI_FORMAT f) {
++  switch (f) {
++    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++    case DXGI_FORMAT_R8G8B8A8_SNORM:
++    case DXGI_FORMAT_R8G8B8A8_UINT:
++      return DXGI_FORMAT_R8G8B8A8_TYPELESS;
++    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
++    case DXGI_FORMAT_R16G16B16A16_FLOAT:
++    case DXGI_FORMAT_R16G16B16A16_UNORM:
++    case DXGI_FORMAT_R16G16B16A16_SNORM:
++      return DXGI_FORMAT_R16G16B16A16_TYPELESS;
++    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
++    case DXGI_FORMAT_R10G10B10A2_UNORM:
++      return DXGI_FORMAT_R10G10B10A2_TYPELESS;
++    case DXGI_FORMAT_R8_TYPELESS:
++    case DXGI_FORMAT_R8_UNORM:
++    case DXGI_FORMAT_R8_SNORM:
++      return DXGI_FORMAT_R8_TYPELESS;
++    case DXGI_FORMAT_R8G8_TYPELESS:
++    case DXGI_FORMAT_R8G8_UNORM:
++    case DXGI_FORMAT_R8G8_SNORM:
++      return DXGI_FORMAT_R8G8_TYPELESS;
++    case DXGI_FORMAT_R16G16_TYPELESS:
++    case DXGI_FORMAT_R16G16_FLOAT:
++    case DXGI_FORMAT_R16G16_UNORM:
++    case DXGI_FORMAT_R16G16_SNORM:
++      return DXGI_FORMAT_R16G16_TYPELESS;
++    case DXGI_FORMAT_R16_TYPELESS:
++    case DXGI_FORMAT_R16_FLOAT:
++    case DXGI_FORMAT_R16_UNORM:
++    case DXGI_FORMAT_R16_SNORM:
++      return DXGI_FORMAT_R16_TYPELESS;
++    case DXGI_FORMAT_R32_TYPELESS:
++    case DXGI_FORMAT_R32_FLOAT:
++      return DXGI_FORMAT_R32_TYPELESS;
++    default:
++      return f;
++  }
++}
++
++}  // namespace
++
++bool NativeTextures::Initialize() {
++  if (initialized_) {
++    return true;
++  }
++  const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
++  ID3D12Device* device = provider.GetDevice();
++
++  HMODULE compiler = LoadLibraryW(L"D3DCompiler_47.dll");
++  auto compile = compiler ? pD3DCompile(GetProcAddress(compiler, "D3DCompile")) : nullptr;
++  if (!compile) {
++    REXGPU_ERROR("NativeTextures: D3DCompiler_47.dll / D3DCompile not available");
++    return false;
++  }
++  bool ok = Compile(compile, "VSMain", "vs_5_0", 1, false, vs_);
++  ok = ok && Compile(compile, "PSReduce", "ps_5_0", 1, false, ps_reduce_);
++  for (uint32_t i = 0; ok && i < 3; ++i) {
++    ok = Compile(compile, "PSColor", "ps_5_0", 1u << i, false, ps_color_[i]) &&
++         Compile(compile, "PSDepth", "ps_5_0", 1u << i, true, ps_depth_[i]);
++  }
++  if (!ok) {
++    return false;
++  }
++
++  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
++  for (uint32_t i = 0; i < 2; ++i) {
++    ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++    ranges[i].NumDescriptors = 1;
++    ranges[i].BaseShaderRegister = i;
++    ranges[i].RegisterSpace = 0;
++    ranges[i].OffsetInDescriptorsFromTableStart = 0;
++  }
++  D3D12_ROOT_PARAMETER params[3] = {};
++  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++  params[0].Constants.ShaderRegister = 0;
++  params[0].Constants.RegisterSpace = 0;
++  params[0].Constants.Num32BitValues = sizeof(ResolveConstants) / sizeof(uint32_t);
++  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  for (uint32_t i = 0; i < 2; ++i) {
++    params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++    params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
++    params[1 + i].DescriptorTable.pDescriptorRanges = &ranges[i];
++    params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  }
++  D3D12_ROOT_SIGNATURE_DESC rs_desc = {};
++  rs_desc.NumParameters = 3;
++  rs_desc.pParameters = params;
++  D3D12_STATIC_SAMPLER_DESC sampler = {};
++  sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
++  sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
++  sampler.MaxLOD = D3D12_FLOAT32_MAX;
++  sampler.ShaderRegister = 0;
++  sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
++  rs_desc.NumStaticSamplers = 1;
++  rs_desc.pStaticSamplers = &sampler;
++  root_signature_ = ui::d3d12::util::CreateRootSignature(provider, rs_desc);
++  if (!root_signature_) {
++    REXGPU_ERROR("NativeTextures: failed to create the root signature");
++    return false;
++  }
++
++  D3D12_DESCRIPTOR_HEAP_DESC heap_desc = {};
++  heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
++  heap_desc.NumDescriptors = kRTVCount;
++  if (FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&rtv_heap_)))) {
++    REXGPU_ERROR("NativeTextures: failed to create the RTV heap");
++    return false;
++  }
++  rtv_descriptor_size_ = provider.GetRTVDescriptorSize();
++  initialized_ = true;
++  REXGPU_INFO("NativeTextures: native render-target mode enabled");
++  return true;
++}
++
++void NativeTextures::Shutdown() {
++  for (auto& [base, texture] : textures_) {
++    DestroyTexture(texture);
++  }
++  textures_.clear();
++  for (auto& [key, derived] : derived_) {
++    DestroyTexture(derived.texture);
++  }
++  derived_.clear();
++  for (auto& [key, reduced] : reduced_) {
++    DestroyTexture(reduced.texture);
++  }
++  reduced_.clear();
++  for (auto& [key, pipeline] : pipelines_) {
++    if (pipeline) pipeline->Release();
++  }
++  pipelines_.clear();
++  ReleaseCompleted(true);
++  ui::d3d12::util::ReleaseAndNull(root_signature_);
++  ui::d3d12::util::ReleaseAndNull(rtv_heap_);
++  initialized_ = false;
++}
++
++void NativeTextures::DestroyTexture(Texture& texture) {
++  if (initialized_) {
++    for (auto& [key, index] : texture.srvs) {
++      command_processor_.ReleaseViewBindlessDescriptorImmediately(index);
++    }
++  }
++  texture.srvs.clear();
++  if (texture.rtv_index != UINT32_MAX) {
++    rtv_free_.push_back(texture.rtv_index);
++    texture.rtv_index = UINT32_MAX;
++  }
++  if (texture.resource) {
++    // The GPU may still use it: release once the current submission completes.
++    graveyard_.emplace_back(command_processor_.GetCurrentSubmission(), texture.resource);
++    texture.resource = nullptr;
++  }
++}
++
++void NativeTextures::ReleaseCompleted(bool all) {
++  uint64_t completed = command_processor_.GetCompletedSubmission();
++  for (auto it = graveyard_.begin(); it != graveyard_.end();) {
++    if (all || it->first <= completed) {
++      it->second->Release();
++      it = graveyard_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++}
++
++bool NativeTextures::CreateTexture(Texture& texture) {
++  ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
++  D3D12_RESOURCE_DESC desc = {};
++  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++  desc.Width = texture.host_width;
++  desc.Height = texture.host_height;
++  desc.DepthOrArraySize = 1;
++  desc.MipLevels = 1;
++  desc.Format = texture.resource_format;
++  desc.SampleDesc.Count = 1;
++  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++  desc.Flags = texture.rtv_format != DXGI_FORMAT_UNKNOWN ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
++                                                         : D3D12_RESOURCE_FLAG_NONE;
++  if (FAILED(device->CreateCommittedResource(&ui::d3d12::util::kHeapPropertiesDefault,
++                                             D3D12_HEAP_FLAG_NONE, &desc, kReadState, nullptr,
++                                             IID_PPV_ARGS(&texture.resource)))) {
++    REXGPU_ERROR("NativeTextures: failed to create a {}x{} texture", texture.host_width,
++                 texture.host_height);
++    return false;
++  }
++  if (texture.rtv_format != DXGI_FORMAT_UNKNOWN) {
++    if (!rtv_free_.empty()) {
++      texture.rtv_index = rtv_free_.back();
++      rtv_free_.pop_back();
++    } else if (rtv_allocated_ < kRTVCount) {
++      texture.rtv_index = rtv_allocated_++;
++    } else {
++      REXGPU_ERROR("NativeTextures: out of RTV descriptors");
++      ui::d3d12::util::ReleaseAndNull(texture.resource);
++      return false;
++    }
++    D3D12_RENDER_TARGET_VIEW_DESC rtv = {};
++    rtv.Format = texture.rtv_format;
++    rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
++    D3D12_CPU_DESCRIPTOR_HANDLE handle = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
++    handle.ptr += size_t(texture.rtv_index) * rtv_descriptor_size_;
++    device->CreateRenderTargetView(texture.resource, &rtv, handle);
++  }
++  return true;
++}
++
++NativeTextures::Texture* NativeTextures::FindContaining(uint32_t address, uint32_t pitch,
++                                                        xenos::TextureFormat format,
++                                                        uint32_t& offset_x_out,
++                                                        uint32_t& offset_y_out) {
++  // An exact base match first: textures may overlap (a texture can be
++  // resolved into a sub-rectangle of a larger one that is sampled separately).
++  auto exact = textures_.find(address);
++  if (exact != textures_.end() && exact->second.pitch == pitch &&
++      exact->second.format == format) {
++    offset_x_out = offset_y_out = 0;
++    return &exact->second;
++  }
++  for (auto& [base, texture] : textures_) {
++    if (address < texture.base || address >= texture.base + texture.bytes ||
++        texture.pitch != pitch || texture.format != format) {
++      continue;
++    }
++    int32_t delta = int32_t(address - texture.base);
++    // Resolve destinations are 32x32-tile aligned within the texture.
++    for (uint32_t y = 0; y < texture.height; y += 8) {
++      for (uint32_t x = 0; x < texture.pitch; x += 8) {
++        if (texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), texture.pitch,
++                                           texture.bpp_log2) == delta) {
++          offset_x_out = x;
++          offset_y_out = y;
++          return &texture;
++        }
++      }
++    }
++  }
++  return nullptr;
++}
++
++NativeTextures::Texture* NativeTextures::FindForSampling(uint32_t address, uint32_t& offset_x_out,
++                                                         uint32_t& offset_y_out) {
++  auto it = textures_.find(address);
++  if (it != textures_.end()) {
++    offset_x_out = offset_y_out = 0;
++    return &it->second;
++  }
++  auto cached = sampling_cache_.find(address);
++  if (cached != sampling_cache_.end()) {
++    auto source = textures_.find(cached->second.base);
++    if (source == textures_.end()) {
++      return nullptr;
++    }
++    offset_x_out = cached->second.x;
++    offset_y_out = cached->second.y;
++    return &source->second;
++  }
++  Texture* found = nullptr;
++  for (auto& [base, texture] : textures_) {
++    if (address > texture.base && address < texture.base + texture.bytes) {
++      found = FindContaining(address, texture.pitch, texture.format, offset_x_out, offset_y_out);
++      if (found) {
++        break;
++      }
++    }
++  }
++  sampling_cache_[address] = found ? SamplingEntry{found->base, offset_x_out, offset_y_out}
++                                   : SamplingEntry{0, 0, 0};
++  return found;
++}
++
++ID3D12PipelineState* NativeTextures::GetPipeline(DXGI_FORMAT rtv_format, uint32_t samples,
++                                                 bool is_depth) {
++  uint64_t key = (uint64_t(rtv_format) << 8) | (uint64_t(samples) << 1) | uint64_t(is_depth);
++  auto it = pipelines_.find(key);
++  if (it != pipelines_.end()) {
++    return it->second;
++  }
++  const std::vector<uint8_t>& ps =
++      !samples ? ps_reduce_
++               : (is_depth ? ps_depth_[SamplesIndex(samples)] : ps_color_[SamplesIndex(samples)]);
++  D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
++  desc.pRootSignature = root_signature_;
++  desc.VS.pShaderBytecode = vs_.data();
++  desc.VS.BytecodeLength = vs_.size();
++  desc.PS.pShaderBytecode = ps.data();
++  desc.PS.BytecodeLength = ps.size();
++  desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
++  desc.SampleMask = UINT_MAX;
++  desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
++  desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
++  desc.RasterizerState.DepthClipEnable = TRUE;
++  desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
++  desc.NumRenderTargets = 1;
++  desc.RTVFormats[0] = rtv_format;
++  desc.SampleDesc.Count = 1;
++  ID3D12PipelineState* pipeline = nullptr;
++  if (FAILED(command_processor_.GetD3D12Provider().GetDevice()->CreateGraphicsPipelineState(
++          &desc, IID_PPV_ARGS(&pipeline)))) {
++    REXGPU_ERROR("NativeTextures: failed to create a resolve pipeline (format {}, {} samples)",
++                 uint32_t(rtv_format), samples);
++    pipeline = nullptr;
++  }
++  pipelines_.emplace(key, pipeline);
++  return pipeline;
++}
++
++bool NativeTextures::Resolve(const Source& source, const Copy& copy) {
++  if (!initialized_ || copy.x1 <= copy.x0 || copy.y1 <= copy.y0) {
++    return false;
++  }
++  ReleaseCompleted(false);
++  const FormatInfo* format_info = FormatInfo::Get(copy.dest_format);
++  D3D12TextureCache& texture_cache = command_processor_.GetTextureCache();
++
++  // Find the destination: a texture containing RB_COPY_DEST_BASE (later bands
++  // of a tiled render), or a new one.
++  uint32_t band_x = 0, band_y = 0;
++  Texture* dest =
++      FindContaining(copy.dest_base, copy.dest_pitch, copy.dest_format, band_x, band_y);
++  if (dest && (dest->scale_x != source.scale_x || dest->scale_y != source.scale_y) &&
++      dest->base == copy.dest_base) {
++    // Same base resolved from a differently scaled render target: recreate.
++    uint32_t base = dest->base;
++    DestroyTexture(*dest);
++    textures_.erase(base);
++    sampling_cache_.clear();
++    dest = nullptr;
++  }
++  if (!dest) {
++    Texture texture;
++    texture.base = copy.dest_base;
++    texture.pitch = copy.dest_pitch;
++    texture.height = copy.dest_height;
++    texture.format = copy.dest_format;
++    texture.bpp_log2 = rex::log2_floor(std::max(format_info->bits_per_pixel >> 3, 1u));
++    texture.bytes = texture_util::GetTiledAddressUpperBound2D(
++        texture.pitch, texture.height, texture.pitch, texture.bpp_log2);
++    texture.resource_format = texture_cache.GetDXGIResourceFormat(copy.dest_format, 1, 1);
++    texture.rtv_format = texture_cache.GetDXGIUnormFormat(copy.dest_format, 1, 1);
++    texture.scale_x = source.scale_x;
++    texture.scale_y = source.scale_y;
++    texture.host_width = std::max(1u, uint32_t(std::lround(texture.pitch * texture.scale_x)));
++    texture.host_height = std::max(1u, uint32_t(std::lround(texture.height * texture.scale_y)));
++    if (texture.resource_format == DXGI_FORMAT_UNKNOWN ||
++        texture.rtv_format == DXGI_FORMAT_UNKNOWN) {
++      REXGPU_WARN("NativeTextures: resolve to unsupported format {}", uint32_t(copy.dest_format));
++      return false;
++    }
++    if (!CreateTexture(texture)) {
++      return false;
++    }
++    dest = &textures_.emplace(texture.base, std::move(texture)).first->second;
++    sampling_cache_.clear();
++  }
++
++  ID3D12PipelineState* pipeline = GetPipeline(dest->rtv_format, source.samples, source.is_depth);
++  if (!pipeline) {
++    return false;
++  }
++  ui::d3d12::util::DescriptorCpuGpuHandlePair descriptors[2];
++  if (!command_processor_.RequestOneUseSingleViewDescriptors(2, descriptors)) {
++    return false;
++  }
++  ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
++  if (!source.is_depth && source.color_view_format != DXGI_FORMAT_UNKNOWN) {
++    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
++    srv.Format = source.color_view_format;
++    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++    if (source.samples > 1) {
++      srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
++    } else {
++      srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++      srv.Texture2D.MipLevels = 1;
++    }
++    device->CreateShaderResourceView(source.resource, &srv, descriptors[0].first);
++  } else {
++    device->CopyDescriptorsSimple(1, descriptors[0].first, source.srv,
++                                  D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++  }
++  device->CopyDescriptorsSimple(1, descriptors[1].first,
++                                source.srv_stencil.ptr ? source.srv_stencil : source.srv,
++                                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++
++  // Destination rectangle in host pixels (dest is at the same coordinates as
++  // the source rectangle, relative to the band).
++  float dx0 = float(band_x + copy.dest_x) * dest->scale_x;
++  float dy0 = float(band_y + copy.dest_y) * dest->scale_y;
++  float dx1 = float(band_x + copy.dest_x + uint32_t(copy.x1 - copy.x0)) * dest->scale_x;
++  float dy1 = float(band_y + copy.dest_y + uint32_t(copy.y1 - copy.y0)) * dest->scale_y;
++  D3D12_RECT scissor;
++  scissor.left = LONG(std::lround(dx0));
++  scissor.top = LONG(std::lround(dy0));
++  scissor.right = std::min(LONG(std::lround(dx1)), LONG(dest->host_width));
++  scissor.bottom = std::min(LONG(std::lround(dy1)), LONG(dest->host_height));
++  if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
++    return true;
++  }
++  D3D12_VIEWPORT viewport;
++  viewport.TopLeftX = float(scissor.left);
++  viewport.TopLeftY = float(scissor.top);
++  viewport.Width = float(scissor.right - scissor.left);
++  viewport.Height = float(scissor.bottom - scissor.top);
++  viewport.MinDepth = 0.0f;
++  viewport.MaxDepth = 1.0f;
++
++  ResolveConstants constants = {};
++  constants.dst_origin[0] = float(scissor.left);
++  constants.dst_origin[1] = float(scissor.top);
++  constants.src_step[0] = source.scale_x / dest->scale_x;
++  constants.src_step[1] = source.scale_y / dest->scale_y;
++  constants.src_origin[0] = float(copy.x0) * source.scale_x +
++                            (float(scissor.left) - dx0) * constants.src_step[0];
++  constants.src_origin[1] = float(copy.y0) * source.scale_y +
++                            (float(scissor.top) - dy0) * constants.src_step[1];
++  constants.sample_select = copy.sample_select;
++  constants.exp_scale = std::ldexp(1.0f, copy.exp_bias);
++  constants.swap_rb = copy.swap_rb ? 1 : 0;
++
++  command_processor_.PushTransitionBarrier(dest->resource, kReadState,
++                                           D3D12_RESOURCE_STATE_RENDER_TARGET);
++  command_processor_.SubmitBarriers();
++  DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
++  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
++  rtv.ptr += size_t(dest->rtv_index) * rtv_descriptor_size_;
++  command_list.D3DOMSetRenderTargets(1, &rtv, FALSE, nullptr);
++  command_processor_.SetExternalGraphicsRootSignature(root_signature_);
++  command_processor_.SetExternalPipeline(pipeline);
++  command_list.D3DSetGraphicsRoot32BitConstants(0, sizeof(constants) / sizeof(uint32_t),
++                                                &constants, 0);
++  command_list.D3DSetGraphicsRootDescriptorTable(1, descriptors[0].second);
++  command_list.D3DSetGraphicsRootDescriptorTable(2, descriptors[1].second);
++  command_processor_.SetViewport(viewport);
++  command_processor_.SetScissorRect(scissor);
++  command_processor_.SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++  command_list.D3DDrawInstanced(3, 1, 0, 0);
++  command_processor_.PushTransitionBarrier(dest->resource, D3D12_RESOURCE_STATE_RENDER_TARGET,
++                                           kReadState);
++  ++dest->version;
++  return true;
++}
++
++uint32_t NativeTextures::GetSRV(Texture& texture, DXGI_FORMAT view_format, uint32_t host_swizzle) {
++  if (view_format == DXGI_FORMAT_UNKNOWN || Family(view_format) != Family(texture.rtv_format)) {
++    view_format = texture.rtv_format;
++  }
++  uint64_t key = (uint64_t(view_format) << 32) | host_swizzle;
++  auto it = texture.srvs.find(key);
++  if (it != texture.srvs.end()) {
++    return it->second;
++  }
++  uint32_t index = command_processor_.RequestPersistentViewBindlessDescriptor();
++  if (index == UINT32_MAX) {
++    return UINT32_MAX;
++  }
++  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
++  desc.Format = view_format;
++  desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
++  desc.Texture2DArray.MipLevels = 1;
++  desc.Texture2DArray.ArraySize = 1;
++  desc.Shader4ComponentMapping =
++      host_swizzle | D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES;
++  const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
++  provider.GetDevice()->CreateShaderResourceView(
++      texture.resource, &desc,
++      provider.OffsetViewDescriptor(command_processor_.GetViewBindlessHeapCPUStart(), index));
++  texture.srvs.emplace(key, index);
++  return index;
++}
++
++NativeTextures::Texture* NativeTextures::GetReduced(Texture& source, float scale_x,
++                                                   float scale_y) {
++  uint64_t key = (uint64_t(source.base) << 32) | (uint64_t(std::lround(scale_x * 64.0f)) << 16) |
++                 uint64_t(std::lround(scale_y * 64.0f));
++  Derived& reduced = reduced_[key];
++  Texture& texture = reduced.texture;
++  uint32_t host_width = std::max(1u, uint32_t(std::lround(source.pitch * scale_x)));
++  uint32_t host_height = std::max(1u, uint32_t(std::lround(source.height * scale_y)));
++  if (!texture.resource || texture.host_width != host_width ||
++      texture.host_height != host_height || texture.resource_format != source.resource_format) {
++    DestroyTexture(texture);
++    texture = Texture();
++    texture.base = source.base;
++    texture.pitch = source.pitch;
++    texture.height = source.height;
++    texture.format = source.format;
++    texture.bpp_log2 = source.bpp_log2;
++    texture.resource_format = source.resource_format;
++    texture.rtv_format = source.rtv_format;
++    texture.scale_x = scale_x;
++    texture.scale_y = scale_y;
++    texture.host_width = host_width;
++    texture.host_height = host_height;
++    if (!CreateTexture(texture)) {
++      return nullptr;
++    }
++    reduced.source_version = UINT64_MAX;
++  }
++  if (reduced.source_version == source.version) {
++    return &texture;
++  }
++  ID3D12PipelineState* pipeline = GetPipeline(texture.rtv_format, 0, false);
++  ui::d3d12::util::DescriptorCpuGpuHandlePair descriptors[2];
++  if (!pipeline || !command_processor_.RequestOneUseSingleViewDescriptors(2, descriptors)) {
++    return nullptr;
++  }
++  ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
++  D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
++  srv.Format = source.rtv_format;
++  srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++  srv.Texture2D.MipLevels = 1;
++  srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++  device->CreateShaderResourceView(source.resource, &srv, descriptors[0].first);
++  device->CreateShaderResourceView(source.resource, &srv, descriptors[1].first);
++  ResolveConstants constants = {};
++  constants.src_step[0] = float(source.host_width) / float(host_width);
++  constants.src_step[1] = float(source.host_height) / float(host_height);
++  constants.inv_src_size[0] = 1.0f / float(source.host_width);
++  constants.inv_src_size[1] = 1.0f / float(source.host_height);
++  D3D12_VIEWPORT viewport = {0.0f, 0.0f, float(host_width), float(host_height), 0.0f, 1.0f};
++  D3D12_RECT scissor = {0, 0, LONG(host_width), LONG(host_height)};
++  command_processor_.PushTransitionBarrier(texture.resource, kReadState,
++                                           D3D12_RESOURCE_STATE_RENDER_TARGET);
++  command_processor_.SubmitBarriers();
++  DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
++  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
++  rtv.ptr += size_t(texture.rtv_index) * rtv_descriptor_size_;
++  command_list.D3DOMSetRenderTargets(1, &rtv, FALSE, nullptr);
++  command_processor_.SetExternalGraphicsRootSignature(root_signature_);
++  command_processor_.SetExternalPipeline(pipeline);
++  command_list.D3DSetGraphicsRoot32BitConstants(0, sizeof(constants) / sizeof(uint32_t),
++                                                &constants, 0);
++  command_list.D3DSetGraphicsRootDescriptorTable(1, descriptors[0].second);
++  command_list.D3DSetGraphicsRootDescriptorTable(2, descriptors[1].second);
++  command_processor_.SetViewport(viewport);
++  command_processor_.SetScissorRect(scissor);
++  command_processor_.SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
++  command_list.D3DDrawInstanced(3, 1, 0, 0);
++  command_processor_.PushTransitionBarrier(texture.resource, D3D12_RESOURCE_STATE_RENDER_TARGET,
++                                           kReadState);
++  command_processor_.SubmitBarriers();
++  reduced.source_version = source.version;
++  render_targets_invalidated_ = true;
++  return &texture;
++}
++
++uint32_t NativeTextures::GetBindlessSRV(uint32_t base_address, uint32_t width, uint32_t height,
++                                        DXGI_FORMAT view_format, uint32_t host_swizzle,
++                                        float draw_scale_x, float draw_scale_y) {
++  if (!initialized_ || textures_.empty()) {
++    return UINT32_MAX;
++  }
++  uint32_t offset_x, offset_y;
++  Texture* source = FindForSampling(base_address, offset_x, offset_y);
++  if (!source) {
++    for (auto& [base, texture] : textures_) {
++      if (base_address > texture.base && base_address < texture.base + texture.bytes) {
++        static uint32_t misses = 0;
++        if (misses++ < 16) {
++          REXGPU_WARN("NativeTextures: {:08X} {}x{} inside native texture {:08X} {}x{} but not "
++                      "at a resolvable offset",
++                      base_address, width, height, texture.base, texture.pitch, texture.height);
++        }
++        break;
++      }
++    }
++    return UINT32_MAX;
++  }
++  if (!offset_x && !offset_y && width == source->pitch && height == source->height) {
++    if (draw_scale_x == 1.0f && draw_scale_y == 1.0f &&
++        (source->scale_x > 1.0f || source->scale_y > 1.0f)) {
++      // Drawn into an unscaled render target (the bloom / luminance chain,
++      // made for 2:1 steps from the 1024x1024 scene): sample a box-filtered
++      // copy at 1x. Scaled draws (the composite, which stretches the scene to
++      // the frame anyway) sample the full-resolution texture.
++      Texture* reduced = GetReduced(*source, std::min(source->scale_x, draw_scale_x),
++                                    std::min(source->scale_y, draw_scale_y));
++      if (reduced) {
++        return GetSRV(*reduced, view_format, host_swizzle);
++      }
++    }
++    return GetSRV(*source, view_format, host_swizzle);
++  }
++  if (offset_x + width > source->pitch || offset_y + height > source->height) {
++    static uint32_t misses = 0;
++    if (misses++ < 16) {
++      REXGPU_WARN("NativeTextures: {:08X} {}x{} only partly inside native texture {:08X} {}x{}",
++                  base_address, width, height, source->base, source->pitch, source->height);
++    }
++    return UINT32_MAX;
++  }
++  // Sub-rectangle: a derived copy.
++  uint64_t key = (uint64_t(base_address) << 32) | (uint64_t(width) << 16) | height;
++  Derived& derived = derived_[key];
++  Texture& texture = derived.texture;
++  uint32_t src_x = uint32_t(std::lround(offset_x * source->scale_x));
++  uint32_t src_y = uint32_t(std::lround(offset_y * source->scale_y));
++  uint32_t host_width = std::max(1u, uint32_t(std::lround(width * source->scale_x)));
++  uint32_t host_height = std::max(1u, uint32_t(std::lround(height * source->scale_y)));
++  host_width = std::min(host_width, source->host_width - std::min(src_x, source->host_width));
++  host_height = std::min(host_height, source->host_height - std::min(src_y, source->host_height));
++  if (!host_width || !host_height) {
++    return UINT32_MAX;
++  }
++  if (!texture.resource || derived.source_base != source->base ||
++      texture.host_width != host_width || texture.host_height != host_height ||
++      texture.resource_format != source->resource_format) {
++    DestroyTexture(texture);
++    texture = Texture();
++    texture.base = base_address;
++    texture.pitch = width;
++    texture.height = height;
++    texture.format = source->format;
++    texture.bpp_log2 = source->bpp_log2;
++    texture.resource_format = source->resource_format;
++    texture.rtv_format = DXGI_FORMAT_UNKNOWN;
++    texture.scale_x = source->scale_x;
++    texture.scale_y = source->scale_y;
++    texture.host_width = host_width;
++    texture.host_height = host_height;
++    if (!CreateTexture(texture)) {
++      return UINT32_MAX;
++    }
++    texture.rtv_format = source->rtv_format;  // only for the view format family
++    derived.source_base = source->base;
++    derived.source_version = UINT64_MAX;
++  }
++  if (derived.source_version != source->version) {
++    command_processor_.PushTransitionBarrier(source->resource, kReadState,
++                                             D3D12_RESOURCE_STATE_COPY_SOURCE);
++    command_processor_.PushTransitionBarrier(texture.resource, kReadState,
++                                             D3D12_RESOURCE_STATE_COPY_DEST);
++    command_processor_.SubmitBarriers();
++    D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
++    dst.pResource = texture.resource;
++    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    src.pResource = source->resource;
++    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    D3D12_BOX box = {src_x, src_y, 0, src_x + host_width, src_y + host_height, 1};
++    command_processor_.GetDeferredCommandList().D3DCopyTextureRegion(&dst, 0, 0, 0, &src, &box);
++    command_processor_.PushTransitionBarrier(source->resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
++                                             kReadState);
++    command_processor_.PushTransitionBarrier(texture.resource, D3D12_RESOURCE_STATE_COPY_DEST,
++                                             kReadState);
++    command_processor_.SubmitBarriers();
++    derived.source_version = source->version;
++  }
++  return GetSRV(texture, view_format, host_swizzle);
++}
++
++ID3D12Resource* NativeTextures::GetSwapTexture(uint32_t address, uint32_t width, uint32_t height,
++                                               D3D12_SHADER_RESOURCE_VIEW_DESC& srv_desc_out) {
++  auto it = textures_.find(address);
++  if (it == textures_.end() || it->second.pitch < width || it->second.height < height) {
++    return nullptr;
++  }
++  srv_desc_out = {};
++  srv_desc_out.Format = it->second.rtv_format;
++  srv_desc_out.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++  srv_desc_out.Texture2D.MipLevels = 1;
++  srv_desc_out.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++  return it->second.resource;
++}
++
++}  // namespace rex::graphics::d3d12
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 8e6b854..0c2a870 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -1591,6 +1591,9 @@ bool PipelineCache::GetCurrentStateDescription(
+       host_msaa_samples = xenos::MsaaSamples::k1X;
+     }
+     // TODO(Triang3l): 4x MSAA fallback when 2x isn't supported.
++    if (host_msaa_samples != xenos::MsaaSamples::k1X) {
++      host_msaa_samples = render_target_cache_.GetCurrentNativeHostMsaa(host_msaa_samples);
++    }
+   }
+   description_out.host_msaa_samples = host_msaa_samples;
+ 
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..d838f08 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -12,6 +12,8 @@
+ #include "thirdparty/dxbc/DXBCChecksum.h"
+ 
+ #include <algorithm>
++#include <cfloat>
++#include <cmath>
+ #include <array>
+ #include <cstdint>
+ #include <cstring>
+@@ -25,6 +27,7 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/deferred_command_list.h>
++#include <rex/graphics/d3d12/native_textures.h>
+ #include <rex/graphics/d3d12/render_target_cache.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/flags.h>
+@@ -201,6 +204,8 @@ bool D3D12RenderTargetCache::Initialize() {
+   if (path_ == Path::kPixelShaderInterlock && !provider.AreRasterizerOrderedViewsSupported()) {
+     path_ = Path::kHostRenderTargets;
+   }
++  native_render_targets_ =
++      path_ == Path::kHostRenderTargets && command_processor_.GetNativeTextures() != nullptr;
+ 
+   // Create the buffer for reinterpreting EDRAM contents.
+   uint32_t edram_buffer_size =
+@@ -1184,7 +1189,80 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+ 
+   // Copying.
+   bool copied = false;
+-  if (resolve_info.copy_dest_extent_length) {
++  NativeTextures* native_textures = command_processor_.GetNativeTextures();
++  if (native_render_targets_ && native_textures) {
++    // Native render-target mode: copy on the host into a native texture.
++    copied = true;
++    if (resolve_info.copy_dest_extent_length) {
++      const RegisterFile& regs = register_file();
++      bool is_depth =
++          resolve_info.rb_copy_control.copy_src_select >= xenos::kMaxColorRenderTargets;
++      const draw_util::ResolveEdramInfo& edram_info =
++          is_depth ? resolve_info.depth_edram_info : resolve_info.color_edram_info;
++      RenderTargetKey key;
++      key.base_tiles =
++          is_depth ? resolve_info.depth_original_base : resolve_info.color_original_base;
++      key.pitch_tiles_at_32bpp = edram_info.pitch_tiles >> edram_info.format_is_64bpp;
++      key.msaa_samples = edram_info.msaa_samples;
++      key.is_depth = is_depth;
++      key.resource_format =
++          is_depth ? edram_info.format
++                   : uint32_t(GetNativeColorResourceFormat(xenos::GetStorageColorFormat(
++                         xenos::ColorRenderTargetFormat(edram_info.format))));
++      if (!is_depth) {
++        key.native_class = GetNativeLastClass(key);
++      }
++      auto* render_target = static_cast<D3D12RenderTarget*>(FindRenderTarget(key));
++      if (render_target) {
++        NativeTextures::Source source;
++        source.resource = render_target->resource();
++        source.srv = render_target->descriptor_srv().GetHandle();
++        if (is_depth && render_target->descriptor_srv_stencil().IsValid()) {
++          source.srv_stencil = render_target->descriptor_srv_stencil().GetHandle();
++        }
++        if (!is_depth) {
++          source.color_view_format = GetColorDrawDXGIFormat(key.GetColorFormat());
++        }
++        source.samples = render_target->resource()->GetDesc().SampleDesc.Count;
++        source.is_depth = is_depth;
++        GetNativeScale(key, source.scale_x, source.scale_y);
++        auto copy_dest_info = regs.Get<reg::RB_COPY_DEST_INFO>();
++        auto copy_dest_pitch = regs.Get<reg::RB_COPY_DEST_PITCH>();
++        NativeTextures::Copy copy;
++        copy.x0 = resolve_info.rect_x0;
++        copy.y0 = resolve_info.rect_y0;
++        copy.x1 = resolve_info.rect_x1;
++        copy.y1 = resolve_info.rect_y1;
++        copy.dest_base = resolve_info.copy_dest_base;
++        copy.dest_x = uint32_t(resolve_info.copy_dest_coordinate_info.offset_x_div_8) << 3;
++        copy.dest_y = uint32_t(resolve_info.copy_dest_coordinate_info.offset_y_div_8) << 3;
++        copy.dest_pitch = copy_dest_pitch.copy_dest_pitch;
++        copy.dest_height = copy_dest_pitch.copy_dest_height;
++        copy.dest_format = xenos::TextureFormat(copy_dest_info.copy_dest_format);
++        copy.sample_select = uint32_t(resolve_info.copy_dest_coordinate_info.copy_sample_select);
++        copy.exp_bias = is_depth ? 0 : int32_t(copy_dest_info.copy_dest_exp_bias);
++        copy.swap_rb = copy_dest_info.copy_dest_swap != 0;
++        command_processor_.PushTransitionBarrier(
++            render_target->resource(),
++            render_target->SetResourceState(NativeTextures::kReadState),
++            NativeTextures::kReadState);
++        if (!native_textures->Resolve(source, copy)) {
++          static uint32_t failures = 0;
++          if (failures++ < 16) {
++            REXGPU_WARN("Native resolve failed: {} -> {:08X} {}x{} format {}",
++                        key.GetDebugName(), copy.dest_base, copy.dest_pitch, copy.dest_height,
++                        uint32_t(copy.dest_format));
++          }
++        }
++        InvalidateCommandListRenderTargets();
++      } else {
++        static uint32_t misses = 0;
++        if (misses++ < 16) {
++          REXGPU_WARN("Native resolve: no render target {}", key.GetDebugName());
++        }
++      }
++    }
++  } else if (resolve_info.copy_dest_extent_length) {
+     draw_util::ResolveCopyShaderConstants copy_shader_constants;
+     uint32_t copy_group_count_x, copy_group_count_y;
+     draw_util::ResolveCopyShaderIndex copy_shader =
+@@ -1340,6 +1418,13 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+         if (PrepareHostRenderTargetsResolveClear(resolve_info, clear_rectangle,
+                                                  clear_render_targets[0], clear_transfers_[0],
+                                                  clear_render_targets[1], clear_transfers_[1])) {
++          if (native_render_targets_) {
++            for (uint32_t i = 0; i < 2; ++i) {
++              if (clear_render_targets[i]) {
++                FilterNativeTransfers(clear_render_targets[i]->key(), clear_transfers_[i]);
++              }
++            }
++          }
+           uint64_t clear_values[2];
+           clear_values[0] = resolve_info.rb_depth_clear;
+           clear_values[1] =
+@@ -1551,6 +1636,54 @@ DXGI_FORMAT D3D12RenderTargetCache::GetDepthSRVStencilDXGIFormat(
+   }
+ }
+ 
++void D3D12RenderTargetCache::GetNativeScale(RenderTargetKey key, float& x_out,
++                                            float& y_out) const {
++  x_out = float(draw_resolution_scale_x());
++  y_out = float(draw_resolution_scale_y());
++  int32_t height = REXCVAR_GET(native_resolution);
++  if (!native_render_targets_ || height <= 0) {
++    return;
++  }
++  // Virtual-On Oratorio Tangram: the 3D scene (and the shadow map and tone
++  // mapping, which share its 1040-pixel pitch) is 1024x1024, stretched to the
++  // 16:9 frame - render it at exactly the output size. The 1280x720 frame
++  // (2D and the composite) scales uniformly. Everything else stays 1x.
++  uint32_t width = key.GetWidth();
++  // The shadow pass (1x, drawn with depth: class 1, and its depth buffer)
++  // stays 1x like on the console; it is cleared through a 4x MSAA alias,
++  // which only EDRAM transfers at the same scale reproduce.
++  bool shadow_pass = key.msaa_samples == xenos::MsaaSamples::k1X &&
++                     (key.is_depth || key.native_class);
++  if (width == 1040 && !shadow_pass) {
++    x_out = float(height) * (16.0f / 9.0f) / 1024.0f;
++    y_out = float(height) / 1024.0f;
++  } else if (width == 1280 && key.msaa_samples == xenos::MsaaSamples::k1X) {
++    x_out = y_out = float(height) / 720.0f;
++  } else {
++    x_out = y_out = 1.0f;
++  }
++}
++
++xenos::MsaaSamples D3D12RenderTargetCache::GetNativeHostMsaa(RenderTargetKey key) const {
++  int32_t option = REXCVAR_GET(native_msaa);
++  if (!native_render_targets_ || option <= 0 || key.msaa_samples == xenos::MsaaSamples::k1X) {
++    return key.msaa_samples;
++  }
++  float scale_x, scale_y;
++  GetNativeScale(key, scale_x, scale_y);
++  if (scale_x == 1.0f && scale_y == 1.0f) {
++    // EDRAM transfers between 1x-scale render targets assume the guest layout.
++    return key.msaa_samples;
++  }
++  if (option >= 4) {
++    return xenos::MsaaSamples::k4X;
++  }
++  if (option >= 2) {
++    return xenos::MsaaSamples::k2X;
++  }
++  return xenos::MsaaSamples::k1X;
++}
++
+ RenderTargetCache::RenderTarget* D3D12RenderTargetCache::CreateRenderTarget(RenderTargetKey key) {
+   ID3D12Device* device = command_processor_.GetD3D12Provider().GetDevice();
+ 
+@@ -1560,6 +1693,13 @@ RenderTargetCache::RenderTarget* D3D12RenderTargetCache::CreateRenderTarget(Rend
+   resource_desc.Width = key.GetWidth() * draw_resolution_scale_x();
+   resource_desc.Height =
+       GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples) * draw_resolution_scale_y();
++  if (native_render_targets_) {
++    float scale_x, scale_y;
++    GetNativeScale(key, scale_x, scale_y);
++    resource_desc.Width = UINT64(std::ceil(key.GetWidth() * scale_x));
++    resource_desc.Height = UINT(std::ceil(
++        GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples) * scale_y));
++  }
+   resource_desc.DepthOrArraySize = 1;
+   resource_desc.MipLevels = 1;
+   if (key.is_depth) {
+@@ -1573,10 +1713,11 @@ RenderTargetCache::RenderTarget* D3D12RenderTargetCache::CreateRenderTarget(Rend
+                  key.is_depth ? "depth" : "color", uint32_t(key.resource_format));
+     return nullptr;
+   }
+-  if (key.msaa_samples == xenos::MsaaSamples::k2X && !msaa_2x_supported()) {
++  xenos::MsaaSamples host_msaa = GetNativeHostMsaa(key);
++  if (host_msaa == xenos::MsaaSamples::k2X && !msaa_2x_supported()) {
+     resource_desc.SampleDesc.Count = 4;
+   } else {
+-    resource_desc.SampleDesc.Count = UINT(1) << UINT(key.msaa_samples);
++    resource_desc.SampleDesc.Count = UINT(1) << UINT(host_msaa);
+   }
+   resource_desc.SampleDesc.Quality = 0;
+   resource_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+@@ -4554,6 +4695,18 @@ void D3D12RenderTargetCache::PerformTransfersAndResolveClears(
+     // Perform the clear.
+     if (resolve_clear_needed) {
+       uint64_t clear_value = render_target_resolve_clear_values[i];
++      if (native_render_targets_) {
++        // Each render target has its own scale.
++        float scale_x, scale_y;
++        GetNativeScale(dest_rt_key, scale_x, scale_y);
++        clear_rect.left = LONG(std::floor(resolve_clear_rectangle->x_pixels * scale_x));
++        clear_rect.top = LONG(std::floor(resolve_clear_rectangle->y_pixels * scale_y));
++        clear_rect.right = LONG(std::ceil(
++            (resolve_clear_rectangle->x_pixels + resolve_clear_rectangle->width_pixels) * scale_x));
++        clear_rect.bottom = LONG(std::ceil(
++            (resolve_clear_rectangle->y_pixels + resolve_clear_rectangle->height_pixels) *
++            scale_y));
++      }
+       if (dest_rt_key.is_depth) {
+         uint32_t depth_guest_clear_value = (uint32_t(clear_value) >> 8) & 0xFFFFFF;
+         float depth_host_clear_value = 0.0f;
+@@ -4735,7 +4888,7 @@ void D3D12RenderTargetCache::SetCommandListRenderTargets(
+       }
+       // Fill the gaps with a null descriptor.
+       while (rtv_count < i) {
+-        rtv_handles[rtv_count++] = render_target->key().msaa_samples != xenos::MsaaSamples::k1X
++        rtv_handles[rtv_count++] = GetNativeHostMsaa(render_target->key()) != xenos::MsaaSamples::k1X
+                                        ? null_rtv_descriptor_ms_.GetHandle()
+                                        : null_rtv_descriptor_ss_.GetHandle();
+       }
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 2be0e8e..78de169 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -877,12 +877,45 @@ void D3D12TextureCache::WriteActiveTextureBindfulSRV(
+   }
+ }
+ 
++uint32_t D3D12TextureCache::GetNativeBindlessSRVIndex(
++    const D3D12Shader::TextureBinding& host_shader_binding) {
++  NativeTextures* native_textures = command_processor_.GetNativeTextures();
++  if (!native_textures) {
++    return UINT32_MAX;
++  }
++  const TextureBinding* binding = GetValidTextureBinding(host_shader_binding.fetch_constant);
++  if (!binding || binding->key.dimension != xenos::DataDimension::k2DOrStacked ||
++      (host_shader_binding.dimension != xenos::FetchOpDimension::k2D &&
++       host_shader_binding.dimension != xenos::FetchOpDimension::k1D)) {
++    return UINT32_MAX;
++  }
++  DXGI_FORMAT view_format = host_shader_binding.is_signed
++                                ? host_formats_[uint32_t(binding->key.format)].dxgi_format_signed
++                                : GetDXGIUnormFormat(binding->key);
++  return native_textures->GetBindlessSRV(
++      binding->key.base_page << 12, binding->key.GetWidth(), binding->key.GetHeight(), view_format,
++      binding->host_swizzle, command_processor_.GetNativeDrawScaleX(),
++      command_processor_.GetNativeDrawScaleY());
++}
++
++void D3D12TextureCache::PrepareNativeTextures(
++    const std::vector<D3D12Shader::TextureBinding>& host_shader_bindings) {
++  for (const D3D12Shader::TextureBinding& host_shader_binding : host_shader_bindings) {
++    GetNativeBindlessSRVIndex(host_shader_binding);
++  }
++}
++
+ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
+     const D3D12Shader::TextureBinding& host_shader_binding) {
+   assert_true(bindless_resources_used_);
+   uint32_t descriptor_index = UINT32_MAX;
+   uint32_t fetch_constant_index = host_shader_binding.fetch_constant;
+   const TextureBinding* binding = GetValidTextureBinding(fetch_constant_index);
++  // Native render-target mode: resolve outputs are host textures.
++  uint32_t native_index = GetNativeBindlessSRVIndex(host_shader_binding);
++  if (native_index != UINT32_MAX) {
++    return native_index;
++  }
+   if (binding && AreDimensionsCompatible(host_shader_binding.dimension, binding->key.dimension)) {
+     bool force_special_view = binding->key.dimension == xenos::DataDimension::k3D &&
+                               (host_shader_binding.dimension == xenos::FetchOpDimension::k1D ||
+@@ -1376,6 +1409,23 @@ ID3D12Resource* D3D12TextureCache::RequestSwapTexture(D3D12_SHADER_RESOURCE_VIEW
+   if (!key.is_valid || key.base_page == 0 || key.dimension != xenos::DataDimension::k2DOrStacked) {
+     return nullptr;
+   }
++  if (NativeTextures* native_textures = command_processor_.GetNativeTextures()) {
++    ID3D12Resource* native_resource = native_textures->GetSwapTexture(
++        key.base_page << 12, key.GetWidth(), key.GetHeight(), srv_desc_out);
++    if (native_resource) {
++      srv_desc_out.Shader4ComponentMapping =
++          GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key)) |
++          D3D12_SHADER_COMPONENT_MAPPING_ALWAYS_SET_BIT_AVOIDING_ZEROMEM_MISTAKES;
++      if (width_unscaled_out) {
++        *width_unscaled_out = key.GetWidth();
++      }
++      if (height_unscaled_out) {
++        *height_unscaled_out = key.GetHeight();
++      }
++      format_out = key.format;
++      return native_resource;
++    }
++  }
+   D3D12Texture* texture = static_cast<D3D12Texture*>(FindOrCreateTexture(key));
+   if (texture == nullptr || !LoadTextureData(*texture)) {
+     return nullptr;
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..fe2838d 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -639,6 +639,18 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     rt_key.msaa_samples = msaa_samples;
+     rt_key.is_depth = rt_bit_index == 0;
+     rt_key.resource_format = resource_formats[rt_bit_index];
++    rt_key.native_class = 0;
++    // Only the 1040-wide 1x layout (Oratorio Tangram's shadow mask and tone
++    // mapping) is split; other layouts keep one host render target.
++    if (native_render_targets_ && rt_bit_index && (depth_and_color_rts_used_bits & 1) &&
++        pitch_tiles_at_32bpp == 13 && msaa_samples == xenos::MsaaSamples::k1X) {
++      rt_key.native_class = 1;
++    }
++    if (native_render_targets_ && rt_bit_index) {
++      RenderTargetKey classless_key = rt_key;
++      classless_key.native_class = 0;
++      native_last_class_[classless_key.key] = rt_key.native_class;
++    }
+     if (!interlock_barrier_only) {
+       RenderTarget* render_target = GetOrCreateRenderTarget(rt_key);
+       if (!render_target) {
+@@ -689,6 +701,16 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     ChangeOwnership(rt_keys[rt_bit_index], 0, rt_lengths_tiles[i],
+                     interlock_barrier_only ? nullptr : &last_update_transfers_[rt_bit_index]);
+   }
++  if (native_render_targets_) {
++    // Contents only move between render targets drawn at the same host scale
++    // (for instance the Direct3D 9 clear through a 4x MSAA alias).
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (!(depth_and_color_rts_used_bits & (uint32_t(1) << i))) {
++        continue;
++      }
++      FilterNativeTransfers(rt_keys[i], last_update_transfers_[i]);
++    }
++  }
+ 
+   if (interlock_barrier_only) {
+     // No copying transfers or render target bindings - only needed the barrier.
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 305380e..60c3b26 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -888,6 +888,10 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
+     return false;
+   }
+ 
++  info_out.rect_x0 = x0;
++  info_out.rect_y0 = y0;
++  info_out.rect_x1 = x1;
++  info_out.rect_y1 = y1;
+   info_out.coordinate_info.width_div_8 = uint32_t(x1 - x0) >> xenos::kResolveAlignmentPixelsLog2;
+   info_out.height_div_8 = uint32_t(y1 - y0) >> xenos::kResolveAlignmentPixelsLog2;
+   // 3 bits for each.

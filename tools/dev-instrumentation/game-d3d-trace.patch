@@ -1,0 +1,32 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1cc0e1e..02cbb19 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -24,6 +24,7 @@ set(ORATAN_SOURCES
+     src/relaunch.cpp
+     src/local_versus.cpp
+     src/select_pages.cpp
++    src/d3d_trace.cpp
+ )
+ 
+ if(WIN32)
+diff --git a/src/frame_stats.cpp b/src/frame_stats.cpp
+index c96b7bc..e5f1cd3 100644
+--- a/src/frame_stats.cpp
++++ b/src/frame_stats.cpp
+@@ -29,6 +29,7 @@ REXCVAR_DEFINE_INT32(log_present_stack, 0, "Oratan",
+ REX_EXTERN(__imp__sub_822D3180);
+ 
+ namespace oratan {
++void D3DTraceFrame();
+ void TagSwap();             // local_versus.cpp
+ int32_t CurrentDrawView();  // local_versus.cpp
+ }
+@@ -101,6 +102,7 @@ REX_HOOK_RAW(sub_822D3180) {
+   static uint32_t frame = 0;
+   oratan::CheckWatches(base, frame++);
+   oratan::CaptureIfRequested(base);
++  oratan::D3DTraceFrame();   // TEMPORARY, renderer phase 1
+   // Count game frames: in split screen each frame is presented once per
+   // view, so only the first view's present counts.
+   if (REXCVAR_GET(log_fps) && oratan::CurrentDrawView() <= 0) OnFrame();

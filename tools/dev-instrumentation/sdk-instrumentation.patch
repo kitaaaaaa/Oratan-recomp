@@ -1,0 +1,466 @@
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index e812153..0d72618 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -12,6 +12,9 @@
+ #include <rex/system/split_screen.h>
+ #include <algorithm>
+ #include <cmath>
++#include <map>
++#include <set>
++#include <string>
+ #include <cstdarg>
+ #include <cstring>
+ #include <sstream>
+@@ -50,6 +53,8 @@ REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
+                     "Submit command list when PM4 primary buffer ends")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// --- temporary renderer assessment stats (gpu_frame_stats) ---
++REXCVAR_DEFINE_BOOL(gpu_frame_stats, false, "GPU", "Developer: log per-frame draw/resolve/render-target/shader statistics");
+ REXCVAR_DEFINE_BOOL(native_render_targets, false, "GPU/D3D12",
+                     "Native render targets: resolves become host copies at any resolution instead "
+                     "of EDRAM emulation (Oratan-recomp renderer rework)");
+@@ -58,6 +63,18 @@ REXCVAR_DEFINE_INT32(native_resolution, 0, "GPU/D3D12",
+ REXCVAR_DEFINE_INT32(native_msaa, 0, "GPU/D3D12",
+                      "Native render targets: anti-aliasing of the 3D scene (0 = game's own 4x, "
+                      "1 = off, 2 = 2x, 4 = 4x)");
++REXCVAR_DEFINE_INT32(gpu_frame_dump_every, 0, "GPU", "Developer: with gpu_frame_stats, dump one frame every N frames to gpu_frame_dump_<frame>.txt");
++namespace {
++struct FrameStats {
++  uint64_t frames = 0, draws = 0, copies = 0, max_draws = 0, max_copies = 0, frame_draws = 0, frame_copies = 0;
++  std::map<std::string, uint64_t> rts, copy_targets;
++  std::set<uint64_t> vs, ps;
++};
++FrameStats g_fs;
++// F11 (with gpu_frame_stats): every draw and resolve of the next 2 frames to gpu_frame_dump.txt.
++FILE* g_dump = nullptr;
++int g_dump_frames = 0;
++}  // namespace
+ 
+ namespace rex::graphics::d3d12 {
+ 
+@@ -1922,6 +1939,37 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   // it. Popped first, exactly once per swap, so tags stay in order even when
+   // the swap is skipped below.
+   int32_t split_view = rex::system::split_screen::PopSwapTag();
++  if (REXCVAR_GET(gpu_frame_stats)) {
++    if (g_dump) {
++      std::fprintf(g_dump, "SWAP fb %08X %ux%u\n", frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
++      if (--g_dump_frames <= 0) {
++        std::fclose(g_dump);
++        g_dump = nullptr;
++        REXGPU_INFO("frame stats: frame dump written");
++      }
++    } else if (GetAsyncKeyState(VK_F11) & 0x8000) {
++      g_dump = std::fopen("gpu_frame_dump.txt", "w");
++      g_dump_frames = 2;
++    } else if (REXCVAR_GET(gpu_frame_dump_every) > 0 &&
++               (g_fs.frames + 1) % uint64_t(REXCVAR_GET(gpu_frame_dump_every)) == 0) {
++      char name[64];
++      std::snprintf(name, sizeof(name), "gpu_frame_dump_%06llu.txt", (unsigned long long)(g_fs.frames + 1));
++      g_dump = std::fopen(name, "w");
++      g_dump_frames = 1;
++    }
++    g_fs.draws += g_fs.frame_draws; g_fs.copies += g_fs.frame_copies;
++    g_fs.max_draws = std::max(g_fs.max_draws, g_fs.frame_draws);
++    g_fs.max_copies = std::max(g_fs.max_copies, g_fs.frame_copies);
++    g_fs.frame_draws = g_fs.frame_copies = 0;
++    if (++g_fs.frames % 300 == 0) {
++      REXGPU_INFO("frame stats: {} frames, draws/frame avg {} max {}, resolves/frame avg {} max {}, shaders seen vs {} ps {}",
++                  g_fs.frames, g_fs.draws / 300, g_fs.max_draws, g_fs.copies / 300, g_fs.max_copies, g_fs.vs.size(), g_fs.ps.size());
++      for (auto& [k, n] : g_fs.rts) REXGPU_INFO("frame stats:   render target {} : {} draws", k, n);
++      for (auto& [k, n] : g_fs.copy_targets) REXGPU_INFO("frame stats:   resolve {} : {}", k, n);
++      g_fs.draws = g_fs.copies = g_fs.max_draws = g_fs.max_copies = 0;
++      g_fs.rts.clear(); g_fs.copy_targets.clear();
++    }
++  }
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ 
+@@ -2457,8 +2505,59 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+   if (edram_mode == xenos::EdramMode::kCopy) {
+     // Special copy handling.
++    if (REXCVAR_GET(gpu_frame_stats)) {
++      ++g_fs.frame_copies;
++      auto di = regs.Get<reg::RB_COPY_DEST_INFO>();
++      auto dp = regs.Get<reg::RB_COPY_DEST_PITCH>();
++      char key[96];
++      std::snprintf(key, sizeof(key), "dest %ux%u fmt %u", uint32_t(dp.copy_dest_pitch), uint32_t(dp.copy_dest_height),
++                    uint32_t(di.copy_dest_format));
++      ++g_fs.copy_targets[key];
++    }
+     return IssueCopy();
+   }
++  if (REXCVAR_GET(gpu_frame_stats)) {
++    ++g_fs.frame_draws;
++    auto si = regs.Get<reg::RB_SURFACE_INFO>();
++    auto ci = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]);
++    auto zi = regs.Get<reg::RB_DEPTH_INFO>();
++    char key[96];
++    std::snprintf(key, sizeof(key), "pitch %u msaa %u color0 fmt %u depth fmt %u", uint32_t(si.surface_pitch),
++                  1u << uint32_t(si.msaa_samples), uint32_t(ci.color_format), uint32_t(zi.depth_format));
++    ++g_fs.rts[key];
++    if (g_dump) {
++      auto wo = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
++      uint32_t mask = regs.Get<reg::RB_COLOR_MASK>().value;
++      auto dc = regs.Get<reg::RB_DEPTHCONTROL>();
++      std::fprintf(g_dump, "D prim %u n %u pitch %u msaa %u wo %d,%d", uint32_t(primitive_type), index_count,
++                   uint32_t(si.surface_pitch), 1u << uint32_t(si.msaa_samples), int(wo.window_x_offset),
++                   int(wo.window_y_offset));
++      for (uint32_t i = 0; i < 4; ++i) {
++        if (!((mask >> (i * 4)) & 0xF)) continue;
++        auto c = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
++        std::fprintf(g_dump, " c%u %u/%u", i, uint32_t(c.color_base) | (uint32_t(c.color_base_bit_11) << 11),
++                     uint32_t(c.color_format));
++      }
++      if (dc.z_enable || dc.stencil_enable) {
++        std::fprintf(g_dump, " z %u/%u", uint32_t(zi.depth_base) | (uint32_t(zi.depth_base_bit_11) << 11),
++                     uint32_t(zi.depth_format));
++      }
++      for (auto* sh : {static_cast<Shader*>(active_vertex_shader()), static_cast<Shader*>(active_pixel_shader())}) {
++        if (!sh) continue;
++        for (auto& tb : sh->texture_bindings()) {
++          auto f = regs.GetTextureFetch(tb.fetch_constant);
++          std::fprintf(g_dump, " t%u %08X %ux%u f%u%s", tb.fetch_constant, uint32_t(f.base_address) << 12,
++                       uint32_t(f.size_2d.width) + 1, uint32_t(f.size_2d.height) + 1, uint32_t(f.format),
++                       f.tiled ? "T" : "");
++        }
++      }
++      std::fprintf(g_dump, " vs %016llX ps %016llX\n",
++                   (unsigned long long)(active_vertex_shader() ? active_vertex_shader()->ucode_data_hash() : 0),
++                   (unsigned long long)(active_pixel_shader() ? active_pixel_shader()->ucode_data_hash() : 0));
++    }
++    if (auto* v = active_vertex_shader()) g_fs.vs.insert(v->ucode_data_hash());
++    if (auto* f = active_pixel_shader()) g_fs.ps.insert(f->ucode_data_hash());
++  }
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 
+@@ -3076,8 +3175,35 @@ bool D3D12CommandProcessor::IssueCopy() {
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(d3d12_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                         written_address, written_length);
++    bool ok = render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
++                                            written_address, written_length);
++    if (g_dump) {
++      const RegisterFile& regs = *register_file_;
++      auto cc = regs.Get<reg::RB_COPY_CONTROL>();
++      auto si = regs.Get<reg::RB_SURFACE_INFO>();
++      auto wo = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
++      auto di = regs.Get<reg::RB_COPY_DEST_INFO>();
++      auto dp = regs.Get<reg::RB_COPY_DEST_PITCH>();
++      std::fprintf(g_dump, "R src %u", uint32_t(cc.copy_src_select));
++      if (cc.copy_src_select < 4) {
++        auto c = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[cc.copy_src_select]);
++        std::fprintf(g_dump, " %u/%u", uint32_t(c.color_base) | (uint32_t(c.color_base_bit_11) << 11),
++                     uint32_t(c.color_format));
++      } else {
++        auto z = regs.Get<reg::RB_DEPTH_INFO>();
++        std::fprintf(g_dump, " %u/z%u", uint32_t(z.depth_base) | (uint32_t(z.depth_base_bit_11) << 11),
++                     uint32_t(z.depth_format));
++      }
++      std::fprintf(g_dump,
++                   " pitch %u msaa %u wo %d,%d sample %u cmd %u clr c%u z%u -> base %08X %ux%u fmt %u bias %d"
++                   " written %08X+%u\n",
++                   uint32_t(si.surface_pitch), 1u << uint32_t(si.msaa_samples), int(wo.window_x_offset),
++                   int(wo.window_y_offset), uint32_t(cc.copy_sample_select), uint32_t(cc.copy_command),
++                   uint32_t(cc.color_clear_enable), uint32_t(cc.depth_clear_enable),
++                   regs[XE_GPU_REG_RB_COPY_DEST_BASE], uint32_t(dp.copy_dest_pitch), uint32_t(dp.copy_dest_height),
++                   uint32_t(di.copy_dest_format), int(di.copy_dest_exp_bias), written_address, written_length);
++    }
++    return ok;
+   }
+   return IssueCopy_ReadbackResolvePath();
+ }
+diff --git a/src/graphics/d3d12/native_textures.cpp b/src/graphics/d3d12/native_textures.cpp
+index b4a168f..a84730a 100644
+--- a/src/graphics/d3d12/native_textures.cpp
++++ b/src/graphics/d3d12/native_textures.cpp
+@@ -713,6 +713,13 @@ uint32_t NativeTextures::GetBindlessSRV(uint32_t base_address, uint32_t width, u
+       // made for 2:1 steps from the 1024x1024 scene): sample a box-filtered
+       // copy at 1x. Scaled draws (the composite, which stretches the scene to
+       // the frame anyway) sample the full-resolution texture.
++      static uint32_t reduce_logs = 0;
++      if (reduce_logs < 40) {
++        ++reduce_logs;
++        REXGPU_INFO("NativeTextures: reducing {:08X} {}x{} (scale {}x{}) for a draw at scale {}x{}",
++                    source->base, source->pitch, source->height, source->scale_x,
++                    source->scale_y, draw_scale_x, draw_scale_y);
++      }
+       Texture* reduced = GetReduced(*source, std::min(source->scale_x, draw_scale_x),
+                                     std::min(source->scale_y, draw_scale_y));
+       if (reduced) {
+@@ -790,6 +797,36 @@ uint32_t NativeTextures::GetBindlessSRV(uint32_t base_address, uint32_t width, u
+ 
+ ID3D12Resource* NativeTextures::GetSwapTexture(uint32_t address, uint32_t width, uint32_t height,
+                                                D3D12_SHADER_RESOURCE_VIEW_DESC& srv_desc_out) {
++  // Debug: F8 cycles the output through every native texture (F8 past the
++  // last one returns to the normal image).
++  static bool f7_was_down = false;
++  static size_t debug_index = 0;
++  bool f7_down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
++  if (f7_down && !f7_was_down) {
++    debug_index = (debug_index + 1) % (textures_.size() + 1);
++  }
++  f7_was_down = f7_down;
++  if (debug_index) {
++    std::vector<uint32_t> bases;
++    for (auto& [base, texture] : textures_) bases.push_back(base);
++    std::sort(bases.begin(), bases.end());
++    if (debug_index <= bases.size()) {
++      Texture& texture = textures_[bases[debug_index - 1]];
++      static size_t logged = 0;
++      if (logged != debug_index) {
++        logged = debug_index;
++        REXGPU_INFO("NativeTextures debug view {}/{}: {:08X} {}x{} format {} (host {}x{})",
++                    debug_index, bases.size(), texture.base, texture.pitch, texture.height,
++                    uint32_t(texture.format), texture.host_width, texture.host_height);
++      }
++      srv_desc_out = {};
++      srv_desc_out.Format = texture.rtv_format;
++      srv_desc_out.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++      srv_desc_out.Texture2D.MipLevels = 1;
++      srv_desc_out.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++      return texture.resource;
++    }
++  }
+   auto it = textures_.find(address);
+   if (it == textures_.end() || it->second.pitch < width || it->second.height < height) {
+     return nullptr;
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index d838f08..6bc8eff 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -1664,6 +1664,169 @@ void D3D12RenderTargetCache::GetNativeScale(RenderTargetKey key, float& x_out,
+   }
+ }
+ 
++void D3D12RenderTargetCache::NativeClearAliases(const memory::Memory& memory,
++                                                const Shader& vertex_shader,
++                                                const Shader* pixel_shader,
++                                                xenos::PrimitiveType primitive_type) {
++  // The Direct3D 9 clear shaders: position and colour from vertex fetch 95.
++  constexpr uint64_t kClearVertexShader = 0x1E6883FCCDE1F688ull;
++  constexpr uint64_t kClearPixelShader = 0xA4A965C189287B99ull;
++  if (!native_render_targets_ || !pixel_shader ||
++      vertex_shader.ucode_data_hash() != kClearVertexShader ||
++      pixel_shader->ucode_data_hash() != kClearPixelShader ||
++      primitive_type != xenos::PrimitiveType::kRectangleList) {
++    return;
++  }
++  const RegisterFile& regs = register_file();
++  xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(95);
++  if (fetch.type != xenos::FetchConstantType::kVertex || fetch.size < 3 * 7) {
++    return;
++  }
++  const uint32_t* vertices =
++      reinterpret_cast<const uint32_t*>(memory.TranslatePhysical(fetch.address * sizeof(uint32_t)));
++  if (!vertices) {
++    return;
++  }
++  uint32_t index_offset = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
++  auto vertex_float = [&](uint32_t index) {
++    float value;
++    uint32_t bits = xenos::GpuSwap(vertices[index_offset * 7 + index], fetch.endian);
++    std::memcpy(&value, &bits, sizeof(value));
++    return value;
++  };
++  auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
++  float x_scale = vte.vport_x_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) : 1.0f;
++  float x_offset = vte.vport_x_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET) : 0.0f;
++  float y_scale = vte.vport_y_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE) : 1.0f;
++  float y_offset = vte.vport_y_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET) : 0.0f;
++  float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
++  for (uint32_t i = 0; i < 3; ++i) {
++    float x = vertex_float(i * 7 + 0) * x_scale + x_offset;
++    float y = vertex_float(i * 7 + 1) * y_scale + y_offset;
++    x0 = std::min(x0, x);
++    x1 = std::max(x1, x);
++    y0 = std::min(y0, y);
++    y1 = std::max(y1, y);
++  }
++  // The rectangle list's implied fourth corner doesn't change the bounds.
++  float depth = vertex_float(2);
++  float color[4] = {vertex_float(3), vertex_float(4), vertex_float(5), vertex_float(6)};
++  auto window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
++  if (regs.Get<reg::PA_SU_SC_MODE_CNTL>().vtx_window_offset_enable) {
++    x0 += float(window_offset.window_x_offset);
++    x1 += float(window_offset.window_x_offset);
++    y0 += float(window_offset.window_y_offset);
++    y1 += float(window_offset.window_y_offset);
++  }
++  // The vertex positions aren't plain pixels (VTE 0x300); Direct3D 9 sets the
++  // scissor to the cleared area, so use that.
++  draw_util::Scissor scissor;
++  draw_util::GetScissor(regs, scissor);
++  x0 = float(scissor.offset[0]);
++  y0 = float(scissor.offset[1]);
++  x1 = float(scissor.offset[0] + scissor.extent[0]);
++  y1 = float(scissor.offset[1] + scissor.extent[1]);
++  if (x1 <= x0 || y1 <= y0) {
++    return;
++  }
++  auto stencil_ref_mask = regs.Get<reg::RB_STENCILREFMASK>();
++  DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
++  static uint32_t log_count = 0;
++  RenderTarget* const* bound_for_log = last_update_accumulated_render_targets();
++  bool shadow_sized = false;
++  for (uint32_t i = 0; i < 2; ++i) {
++    if (bound_for_log[i] && bound_for_log[i]->key().pitch_tiles_at_32bpp == 13) shadow_sized = true;
++  }
++  bool log = shadow_sized && log_count < 200;
++  if (log) {
++    ++log_count;
++    std::string raw;
++    for (uint32_t i = 0; i < 21; ++i) {
++      raw += fmt::format(" {}", vertex_float(i));
++    }
++    REXGPU_INFO("NativeClear: fetch {:08X} size {} index offset {} raw{}", fetch.address * 4,
++                uint32_t(fetch.size), index_offset, raw);
++    REXGPU_INFO("NativeClear: rect {},{} - {},{} z {} colour {} {} {} {} vte {:X}", x0, y0, x1, y1,
++                depth, color[0], color[1], color[2], color[3], vte.value);
++  }
++
++  RenderTarget* const* bound = last_update_accumulated_render_targets();
++  for (uint32_t slot = 0; slot < 2; ++slot) {
++    // Depth (0) and colour 0 (1).
++    const RenderTarget* source = bound[slot];
++    if (!source) {
++      continue;
++    }
++    RenderTargetKey source_key = source->key();
++    float source_scale_x, source_scale_y;
++    GetNativeScale(source_key, source_scale_x, source_scale_y);
++    // The rectangle in EDRAM samples.
++    uint32_t source_samples_x = source_key.msaa_samples >= xenos::MsaaSamples::k4X ? 2 : 1;
++    uint32_t source_samples_y = source_key.msaa_samples >= xenos::MsaaSamples::k2X ? 2 : 1;
++    float sx0 = x0 * source_samples_x, sx1 = x1 * source_samples_x;
++    float sy0 = y0 * source_samples_y, sy1 = y1 * source_samples_y;
++    ForEachRenderTarget([&](RenderTarget* target) {
++      RenderTargetKey key = target->key();
++      if (target == source || key.base_tiles != source_key.base_tiles ||
++          key.pitch_tiles_at_32bpp != source_key.pitch_tiles_at_32bpp ||
++          key.is_depth != source_key.is_depth ||
++          (!key.is_depth && xenos::IsColorRenderTargetFormat64bpp(key.GetColorFormat()) !=
++                                xenos::IsColorRenderTargetFormat64bpp(
++                                    source_key.GetColorFormat()))) {
++        return;
++      }
++      float scale_x, scale_y;
++      GetNativeScale(key, scale_x, scale_y);
++      if (scale_x == source_scale_x && scale_y == source_scale_y) {
++        return;  // EDRAM transfers handle same-scale aliases.
++      }
++      uint32_t samples_x = key.msaa_samples >= xenos::MsaaSamples::k4X ? 2 : 1;
++      uint32_t samples_y = key.msaa_samples >= xenos::MsaaSamples::k2X ? 2 : 1;
++      D3D12_RECT rect;
++      rect.left = LONG(std::floor(sx0 / samples_x * scale_x));
++      rect.top = LONG(std::floor(sy0 / samples_y * scale_y));
++      rect.right = LONG(std::ceil(sx1 / samples_x * scale_x));
++      rect.bottom = LONG(std::ceil(sy1 / samples_y * scale_y));
++      auto& clamp_target = *static_cast<D3D12RenderTarget*>(target);
++      D3D12_RESOURCE_DESC target_desc = clamp_target.resource()->GetDesc();
++      rect.left = std::clamp(rect.left, LONG(0), LONG(target_desc.Width));
++      rect.right = std::clamp(rect.right, LONG(0), LONG(target_desc.Width));
++      rect.top = std::clamp(rect.top, LONG(0), LONG(target_desc.Height));
++      rect.bottom = std::clamp(rect.bottom, LONG(0), LONG(target_desc.Height));
++      if (rect.right <= rect.left || rect.bottom <= rect.top) {
++        return;
++      }
++      if (log) {
++        REXGPU_INFO("NativeClear:   {} -> {} host rect {},{} - {},{}", source_key.GetDebugName(),
++                    key.GetDebugName(), rect.left, rect.top, rect.right, rect.bottom);
++      }
++      auto& d3d12_target = *static_cast<D3D12RenderTarget*>(target);
++      if (key.is_depth) {
++        command_processor_.PushTransitionBarrier(
++            d3d12_target.resource(),
++            d3d12_target.SetResourceState(D3D12_RESOURCE_STATE_DEPTH_WRITE),
++            D3D12_RESOURCE_STATE_DEPTH_WRITE);
++        command_processor_.SubmitBarriers();
++        float host_depth = key.GetDepthFormat() == xenos::DepthRenderTargetFormat::kD24FS8
++                               ? depth * 0.5f
++                               : depth;
++        command_list.D3DClearDepthStencilView(
++            d3d12_target.descriptor_draw().GetHandle(),
++            D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, std::clamp(host_depth, 0.0f, 1.0f),
++            UINT8(stencil_ref_mask.stencilref), 1, &rect);
++      } else {
++        command_processor_.PushTransitionBarrier(
++            d3d12_target.resource(),
++            d3d12_target.SetResourceState(D3D12_RESOURCE_STATE_RENDER_TARGET),
++            D3D12_RESOURCE_STATE_RENDER_TARGET);
++        command_processor_.SubmitBarriers();
++        command_list.D3DClearRenderTargetView(d3d12_target.descriptor_draw().GetHandle(), color, 1,
++                                              &rect);
++      }
++    });
++  }
++}
++
+ xenos::MsaaSamples D3D12RenderTargetCache::GetNativeHostMsaa(RenderTargetKey key) const {
+   int32_t option = REXCVAR_GET(native_msaa);
+   if (!native_render_targets_ || option <= 0 || key.msaa_samples == xenos::MsaaSamples::k1X) {
+diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
+index 4965509..cbb1972 100644
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -88,6 +88,12 @@ class D3D12RenderTargetCache final : public RenderTargetCache {
+     return guest_msaa;
+   }
+   bool native_render_targets() const { return native_render_targets_; }
++  // Native mode: Direct3D 9's Clear draws a rectangle into the target and
++  // into a 4x MSAA half-pitch alias of the same EDRAM. When the alias is at a
++  // different scale (so no EDRAM transfer reaches the real target), apply the
++  // clear to the real target directly. Call after Update.
++  void NativeClearAliases(const memory::Memory& memory, const Shader& vertex_shader,
++                          const Shader* pixel_shader, xenos::PrimitiveType primitive_type);
+   // Native scale of the render targets bound by the last Update (1 if none).
+   void GetCurrentNativeScale(float& x_out, float& y_out) const {
+     x_out = y_out = 1.0f;
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+index de13084..c3b20c8 100644
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -586,6 +586,12 @@ class RenderTargetCache {
+                                    }),
+                     transfers.end());
+   }
++  template <typename Function>
++  void ForEachRenderTarget(Function function) const {
++    for (const auto& key_and_render_target : render_targets_) {
++      function(key_and_render_target.second);
++    }
++  }
+   xenos::ColorRenderTargetFormat GetNativeColorResourceFormat(xenos::ColorRenderTargetFormat format) const {
+     return GetColorResourceFormat(format);
+   }
+diff --git a/src/ui/d3d12/d3d12_provider.cpp b/src/ui/d3d12/d3d12_provider.cpp
+index bf8252b..d621d65 100644
+--- a/src/ui/d3d12/d3d12_provider.cpp
++++ b/src/ui/d3d12/d3d12_provider.cpp
+@@ -351,6 +351,20 @@ bool D3D12Provider::Initialize() {
+     if (REXCVAR_GET(d3d12_break_on_warning)) {
+       d3d12_info_queue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+     }
++    // Write debug layer messages to the log (no debugger needed).
++    ID3D12InfoQueue1* d3d12_info_queue1;
++    if (SUCCEEDED(d3d12_info_queue->QueryInterface(IID_PPV_ARGS(&d3d12_info_queue1)))) {
++      DWORD cookie = 0;
++      d3d12_info_queue1->RegisterMessageCallback(
++          [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
++             LPCSTR description, void*) {
++            if (severity <= D3D12_MESSAGE_SEVERITY_WARNING) {
++              REXLOG_ERROR("D3D12 debug layer ({}): {}", uint32_t(id), description);
++            }
++          },
++          D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
++      d3d12_info_queue1->Release();
++    }
+     d3d12_info_queue->Release();
+   }
+ 

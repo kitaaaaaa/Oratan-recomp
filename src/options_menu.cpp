@@ -14,30 +14,62 @@
 namespace oratan {
 namespace {
 
-// Internal rendering resolution. The game itself renders 1280x720; the GPU
-// layer can draw at a multiple of that.
+// Rendering resolution. The original renders the 3D scene at 1024x1024 and
+// stretches it onto a 1280x720 frame; native rendering draws both at exactly
+// the chosen output size (native render targets, renderer rework).
 struct ResolutionChoice {
-  int scale;
+  int height;  // 0 = original EDRAM emulation
   const char* label;
 };
 constexpr ResolutionChoice kResolutions[] = {
-    {1, "1280 x 720 (original)"},
-    {2, "2560 x 1440"},
-    {3, "3840 x 2160 (4K)"},
-    {4, "5120 x 2880"},
+    {0, "1280 x 720 (original)"},
+    {1080, "1920 x 1080"},
+    {1440, "2560 x 1440"},
+    {2160, "3840 x 2160 (4K)"},
 };
 
-int CurrentScale() {
-  const int scale = rex::cvar::Query<int>("resolution_scale");
-  return scale > 0 ? scale : 1;
+int CurrentHeight() {
+  if (!rex::cvar::Query<bool>("native_render_targets")) return 0;
+  const int height = rex::cvar::Query<int>("native_resolution");
+  return height > 0 ? height : 0;
 }
 
-// The scale the renderer was created with; changes only apply after a restart.
-int g_scale_at_startup = 0;
+// The resolution the renderer was created with; changes only apply after a
+// restart.
+int g_height_at_startup = -1;
+
+// Anti-aliasing of the 3D scene (native rendering only; applies on restart).
+struct MsaaChoice {
+  int value;  // native_msaa
+  const char* label;
+};
+constexpr MsaaChoice kMsaa[] = {
+    {1, "Off"},
+    {2, "2x MSAA"},
+    {0, "4x MSAA (original)"},
+};
+int g_msaa_at_startup = -1;
+
+// Anisotropic filtering (anisotropic_override; applies immediately).
+struct AnisoChoice {
+  int value;
+  const char* label;
+};
+constexpr AnisoChoice kAniso[] = {
+    {0, "Off"}, {2, "2x"}, {3, "4x"}, {4, "8x"}, {5, "16x"},
+};
+
+int CurrentMsaa() {
+  const int msaa = rex::cvar::Query<int>("native_msaa");
+  return msaa == 4 ? 0 : msaa;  // 4x is the game's own setting
+}
 
 }  // namespace
 
-void RememberStartupSettings() { g_scale_at_startup = CurrentScale(); }
+void RememberStartupSettings() {
+  g_height_at_startup = CurrentHeight();
+  g_msaa_at_startup = CurrentMsaa();
+}
 
 OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
                              std::function<void()> restart)
@@ -59,21 +91,58 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   }
 
   // Resolution
-  const int scale = CurrentScale();
+  const int height = CurrentHeight();
   const char* current_label = "Custom";
   for (const auto& r : kResolutions) {
-    if (r.scale == scale) current_label = r.label;
+    if (r.height == height) current_label = r.label;
   }
   if (ImGui::BeginCombo("Resolution", current_label)) {
     for (const auto& r : kResolutions) {
-      if (ImGui::Selectable(r.label, r.scale == scale)) {
-        rex::cvar::SetFlagByName("resolution_scale", std::to_string(r.scale));
+      if (ImGui::Selectable(r.label, r.height == height)) {
+        rex::cvar::SetFlagByName("native_render_targets", r.height ? "true" : "false");
+        rex::cvar::SetFlagByName("native_resolution", std::to_string(r.height));
+        rex::cvar::SetFlagByName("resolution_scale", "1");
         Save();
       }
     }
     ImGui::EndCombo();
   }
-  if (g_scale_at_startup && CurrentScale() != g_scale_at_startup) {
+  // Anti-aliasing (native rendering only)
+  ImGui::BeginDisabled(height == 0);
+  const int msaa = CurrentMsaa();
+  const char* msaa_label = "Custom";
+  for (const auto& m : kMsaa) {
+    if (m.value == msaa) msaa_label = m.label;
+  }
+  if (ImGui::BeginCombo("Anti-aliasing", msaa_label)) {
+    for (const auto& m : kMsaa) {
+      if (ImGui::Selectable(m.label, m.value == msaa)) {
+        rex::cvar::SetFlagByName("native_msaa", std::to_string(m.value));
+        Save();
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+
+  // Anisotropic filtering
+  const int aniso = rex::cvar::Query<int>("anisotropic_override");
+  const char* aniso_label = "Game default";
+  for (const auto& a : kAniso) {
+    if (a.value == aniso) aniso_label = a.label;
+  }
+  if (ImGui::BeginCombo("Anisotropic filtering", aniso_label)) {
+    for (const auto& a : kAniso) {
+      if (ImGui::Selectable(a.label, a.value == aniso)) {
+        rex::cvar::SetFlagByName("anisotropic_override", std::to_string(a.value));
+        Save();
+      }
+    }
+    ImGui::EndCombo();
+  }
+
+  if ((g_height_at_startup >= 0 && CurrentHeight() != g_height_at_startup) ||
+      (g_msaa_at_startup >= 0 && height != 0 && CurrentMsaa() != g_msaa_at_startup)) {
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Restart the game to apply.");
     ImGui::SameLine();
     if (restart_ && ImGui::Button("Restart now")) restart_();
