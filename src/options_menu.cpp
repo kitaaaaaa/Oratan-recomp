@@ -125,6 +125,22 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   }
   ImGui::EndDisabled();
 
+  // Lighting (native rendering only; applies immediately)
+  ImGui::BeginDisabled(height == 0);
+  bool shadows = rex::cvar::Query<bool>("native_shadows");
+  if (ImGui::Checkbox("Sharp shadows", &shadows)) {
+    rex::cvar::SetFlagByName("native_shadows", shadows ? "true" : "false");
+    Save();
+  }
+  bool ambient_occlusion = rex::cvar::Query<double>("native_ao_strength") > 0.0;
+  ImGui::BeginDisabled(!shadows);
+  if (ImGui::Checkbox("Ambient occlusion", &ambient_occlusion)) {
+    rex::cvar::SetFlagByName("native_ao_strength", ambient_occlusion ? "1.0" : "0");
+    Save();
+  }
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+
   // Anisotropic filtering
   const int aniso = rex::cvar::Query<int>("anisotropic_override");
   const char* aniso_label = "Game default";

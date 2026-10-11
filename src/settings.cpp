@@ -33,7 +33,7 @@ constexpr Managed kManaged[] = {
     {"local_versus", false},     {"split_screen", false},     {"split_display", false},
     {"split_swap_sides", false}, {"dual_monitor_span", true},
     {"native_render_targets", false}, {"native_resolution", false}, {"native_msaa", false},
-    {"anisotropic_override", false},
+    {"anisotropic_override", false}, {"native_shadows", false}, {"native_ao_strength", false},
 };
 
 std::string KeyOf(const std::string& line) {

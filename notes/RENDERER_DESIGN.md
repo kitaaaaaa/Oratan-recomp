@@ -133,3 +133,42 @@ along the way (frame dumps, texture viewer, D3D trace) are in `tools/dev-instrum
 Not done yet: precompiled resolve shaders instead of runtime D3DCompile (D3DCompiler_47.dll
 ships with Windows 10+); resolved depth buffers' byte order is unverified (not sampled in any
 scene tested).
+
+## Lighting (2026-10-10, uncommitted)
+
+Added on top of the native renderer, as one full-screen pass over the HDR scene (before bloom and
+tone mapping), so the game's own lighting and effects are untouched.
+
+**Sharp shadow mapping.** The game already renders a shadow pass per robot: the robot from the
+light's point of view, with depth, into a 1024×1024 target (it uses only the silhouette, blurred,
+as a soft blob on the ground). The light-space depth buffer is a proper shadow map. The robots are
+drawn with the same index buffers in the shadow pass (light matrix in c36–c39) and in the scene
+(camera matrix in c36–c39); light × inverse(camera) is the same for every mesh because the model
+matrix cancels out, which gives a camera-clip → light-clip transform per robot per frame. For each
+scene pixel (from the 1080p scene depth) the pass looks up both light maps (3×3 PCF) and darkens
+the HDR colour. Result: robots shadow themselves and cast sharp shadows on the floor and on each
+other. Verified with a CPU readback of the depth buffers analysed offline.
+
+**Ambient occlusion.** From the same depth buffer and the camera projection (taken from the same
+matrices: near plane 0.5, focal lengths with exactly the 16:9-in-square ratio). Alchemy-style
+obscurance, 12 samples, normals reconstructed from depth.
+
+Settings: F1 → Sharp shadows / Ambient occlusion (native resolutions only, apply immediately).
+cvars `native_shadows`, `native_shadow_strength` (0.5), `native_ao_strength` (1.0),
+`native_ao_radius` (1.5), `native_shadow_debug` (1 = shadow factor, 2 = AO). Cost: none measurable
+(60 fps at 1080p).
+
+Not done / untested: mirror matches (same robot twice — the k-th scene draw of a mesh is paired
+with its k-th shadow-pass draw, which assumes both passes draw the robots in the same order);
+stages other than Public Port; lighting from projectiles/explosions (would need the game's
+dynamic light data).
+
+**Update 2026-10-11: self-shadowing off by default.** It looked wrong on robots with skirts
+(Fei-Yen, Angelan): strange lower-body shadows. Robot draws (scene meshes shared with the shadow
+pass) now write their shadow-pass number + 1 into the stencil (the game doesn't use stencil in the
+scene; the override is skipped and a warning logged if it ever does). The depth resolve keeps the
+stencil, and a robot ignores its own light map unless `native_self_shadow` is on — it is still
+shadowed by the other robot, and both still cast floor shadows. The pairing of scene draws with
+shadow-pass draws restarts per tile (the scene is drawn in 4 tiles). A depth-gap threshold was
+tried first and rejected: it also removed floor shadows near the robots. Debug view 3 shows the
+robot mask.
