@@ -36,13 +36,34 @@ Already-extracted files (`default.xex` and the `media` folder) work too.
 ### Controls
 
 - Xbox controllers work as on the console.
-- **F1** opens Options (resolution, VSync, fullscreen, local versus).
+- **F1** opens Options (resolution, anti-aliasing, anisotropic filtering, VSync,
+  fullscreen, local versus).
 - **Alt+Enter** switches between fullscreen and a window. To move the game to
   another monitor: Alt+Enter, drag the window over, Alt+Enter again. The
   choice is remembered.
 
 A log is written to the `logs` folder next to `oratan.exe`; attach it to bug
 reports.
+
+### Graphics
+
+**F1 → Resolution** offers the original 1280×720 and native **1920×1080**,
+**2560×1440** and **3840×2160**. The original game draws its 3D scene into a
+1024×1024 image and stretches it onto the 720p screen. The native modes draw
+the scene and the HUD at exactly the chosen size instead, so the image is
+sharp rather than upscaled. Shadows stay at the original resolution (the game
+clears them through a trick that only works there). Changing the resolution
+needs a restart; the Options window offers a **Restart now** button.
+
+With a native resolution:
+
+- **Anti-aliasing:** Off, 2× MSAA or 4× MSAA (the game's own setting). Applies
+  to the 3D scene and needs a restart.
+- **Anisotropic filtering:** Off to 16×, applies immediately. Keeps floors and
+  other surfaces seen at shallow angles sharp.
+
+All native modes run at 60 fps on a mid-range DirectX 12 graphics card (tested
+on an RTX 2080, including 4K).
 
 ### Local two-player versus (experimental)
 
@@ -94,7 +115,8 @@ crash or misbehave and are left out.
 |---|---|
 | Single player Arcade mode (start to finish) and Training | Working, 60 fps |
 | Other modes (Score Attack, Customize), saving | Working, minimally tested |
-| Resolution up to 4x, VSync, windowed mode | Working (above 2x may slow the game on some PCs) |
+| Native 1080p / 1440p / 4K, anti-aliasing, anisotropic filtering | Working, 60 fps |
+| VSync, windowed mode | Working |
 | Local two-player versus with split screen | Working, experimental, see above |
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
 | Xbox Live / System Link | Not yet supported |
