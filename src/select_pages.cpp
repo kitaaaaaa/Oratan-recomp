@@ -26,6 +26,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game_memory.h"
+
 #include <cstdint>
 #include <cstring>
 
@@ -40,15 +42,8 @@ REX_EXTERN(__imp__sub_8218E4C0);
 
 namespace {
 
-uint32_t LoadU32(const uint8_t* p) {
-  uint32_t v;
-  std::memcpy(&v, p, 4);
-  return __builtin_bswap32(v);
-}
-void StoreS32(uint8_t* p, int32_t v) {
-  const uint32_t b = __builtin_bswap32(uint32_t(v));
-  std::memcpy(p, &b, 4);
-}
+namespace game = oratan::game;
+
 void MakeWritable(uint8_t* p, size_t n) {
   DWORD old;
   VirtualProtect(p, n, PAGE_READWRITE, &old);
@@ -101,10 +96,7 @@ bool SwitchPressed(bool& was_down) {
 }
 
 // --- stage select ---
-constexpr uint32_t kStageTable = 0x8203FCA8;
-constexpr uint32_t kEntrySize = 24;
-constexpr uint32_t kEntries = 17;
-constexpr uint32_t kStageVar = 0x83876DF4;
+using StageCards = game::StageCard[game::kStageCarouselEntries];
 
 struct ExtraStage {
   int32_t stage;
@@ -112,20 +104,16 @@ struct ExtraStage {
   const char* name;
 };
 constexpr ExtraStage kExtraStages[] = {
-    {10, 10, "DISTORTED SHRINE"},  // card: SANCTUARY2
-    {21, 3, "TANGRAM"},            // card: SPACE STATION
+    {game::stage_id::kDistortedShrine, 10, "DISTORTED SHRINE"},  // card: SANCTUARY2
+    {game::stage_id::kTangram, 3, "TANGRAM"},                   // card: SPACE STATION
 };
 
-uint8_t g_stage_page1[kEntries * kEntrySize];
-uint8_t g_stage_page2[kEntries * kEntrySize];
+StageCards g_stage_page1;
+StageCards g_stage_page2;
 bool g_stage_built = false;
 int g_stage_page = 0;
 
 // --- character select ---
-constexpr uint32_t kRoster = 0x82010698;
-constexpr uint32_t kCursorOffsets[] = {0x168, 0x16C};   // in the select state (r3)
-constexpr uint32_t kPortraits = 0x820106B0;    // u32 sprite ids, 2 x 18 cells
-constexpr uint32_t kCellsPerSide = 18;
 struct CyclingSlot {
   uint32_t slot;
   int count;
@@ -142,15 +130,15 @@ struct CyclingSlot {
 // (they rely on their own stages; the robot loader's sub_821C5060 normally
 // maps BAL-BADOS to the form for the stage).
 CyclingSlot g_cycling[] = {
-    {7, 2, {15, 17}, {0x79C, 0x72C}, {"AJIM", "BRADTOS"}, 0},
+    {7, 2, {game::robot_id::kAjim, game::robot_id::kBradtos}, {0x79C, 0x72C}, {"AJIM", "BRADTOS"}, 0},
 };
 void SetPortrait(uint8_t* base, uint32_t slot, uint32_t sprite) {
   const bool shared = sprite == 0x72B || sprite == 0x72C;   // same tile on both sides
+  auto* portraits = game::GuestPtr<rex::be<uint32_t>>(base, game::kTrainingPortraits);
   for (uint32_t side = 0; side < 2; ++side) {
-    uint8_t* p = base + kPortraits + 4 * (side * kCellsPerSide + slot);
-    MakeWritable(p, 4);
-    const uint32_t v = __builtin_bswap32(sprite + (shared ? 0 : side));
-    std::memcpy(p, &v, 4);
+    rex::be<uint32_t>& cell = portraits[side * game::kTrainingRosterCells + slot];
+    MakeWritable(reinterpret_cast<uint8_t*>(&cell), sizeof(cell));
+    cell = sprite + (shared ? 0 : side);
   }
 }
 
@@ -158,15 +146,15 @@ void SetPortrait(uint8_t* base, uint32_t slot, uint32_t sprite) {
 
 // sub_8220EC30: stage select per-frame update (cursor movement).
 REX_HOOK_RAW(sub_8220EC30) {
-  uint8_t* table = base + kStageTable;
+  game::StageCard* table = game::GuestPtr<game::StageCard>(base, game::kStageCarousel);
   if (!g_stage_built) {
-    MakeWritable(table, sizeof(g_stage_page1));
+    MakeWritable(reinterpret_cast<uint8_t*>(table), sizeof(g_stage_page1));
     std::memcpy(g_stage_page1, table, sizeof(g_stage_page1));
     std::memcpy(g_stage_page2, table, sizeof(g_stage_page2));
     for (uint32_t i = 0; i < sizeof(kExtraStages) / sizeof(kExtraStages[0]); ++i) {
-      uint8_t* e = g_stage_page2 + (1 + i) * kEntrySize;   // slots after RANDOM
-      std::memcpy(e, g_stage_page1 + kExtraStages[i].card_from * kEntrySize, kEntrySize);
-      StoreS32(e, kExtraStages[i].stage);
+      game::StageCard& card = g_stage_page2[1 + i];   // slots after RANDOM
+      card = g_stage_page1[kExtraStages[i].card_from];
+      card.stage = kExtraStages[i].stage;
     }
     g_stage_built = true;
   }
@@ -183,7 +171,7 @@ REX_HOOK_RAW(sub_8220EC30) {
 // of the chosen stage.
 REX_HOOK_RAW(sub_8220E528) {
   __imp__sub_8220E528(ctx, base);
-  const int32_t stage = int32_t(LoadU32(base + kStageVar));
+  const int32_t stage = *game::GuestPtr<rex::be<int32_t>>(base, game::kNextStage);
   static int32_t last = -2;
   if (stage == last) return;
   last = stage;
@@ -198,14 +186,14 @@ REX_HOOK_RAW(sub_8220E528) {
 REX_HOOK_RAW(sub_8218E4C0) {
   static bool was_down = false;
   if (SwitchPressed(was_down)) {
-    const uint32_t state = ctx.r3.u32;
+    const auto* select = game::GuestPtr<game::TrainingCharSelect>(base, ctx.r3.u32);
     for (auto& c : g_cycling) {
       bool under_cursor = false;
-      for (uint32_t off : kCursorOffsets) {
-        if (int32_t(LoadU32(base + state + off)) == int32_t(c.slot)) under_cursor = true;
+      for (int32_t cursor : select->cursor) {
+        if (cursor == int32_t(c.slot)) under_cursor = true;
       }
       if (!under_cursor) continue;
-      uint8_t* slot = base + kRoster + c.slot;
+      uint8_t* slot = base + game::kTrainingRoster + c.slot;
       MakeWritable(slot, 1);
       c.choice = (c.choice + 1) % c.count;
       *slot = c.robots[c.choice];

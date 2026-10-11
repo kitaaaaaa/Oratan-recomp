@@ -11,6 +11,7 @@
 #include <rex/logging.h>
 
 #include "debug_tools.h"
+#include "game_memory.h"
 
 #include <algorithm>
 #include <chrono>
@@ -104,9 +105,9 @@ REX_HOOK_RAW(sub_822D3180) {
   // Count game frames: in split screen each frame is presented once per
   // view, so only the first view's present counts.
   if (REXCVAR_GET(log_fps) && oratan::CurrentDrawView() <= 0) OnFrame();
-  // Note game mode switches (0 OPEN, 1 GAME, 2 NETVS, 3 CHRSEL, 4 ENDING) in the log.
+  // Note game module switches (oratan::game::Module: 0 OPEN, 1 GAME, 2 NETVS, ...) in the log.
   static int last_module = -1;
-  if (const int module = base[0x839C21BC]; module != last_module) {
+  if (const int module = int(oratan::game::CurrentModule(base)); module != last_module) {
     last_module = module;
     REXLOG_INFO("game module {}", module);
   }

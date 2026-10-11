@@ -8,6 +8,8 @@
 #include <rex/ppc/func.h>
 #include <rex/system/xmemory.h>
 
+#include "game_memory.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -204,11 +206,6 @@ void CaptureIfRequested(const uint8_t* base) {
 
 void SaveSnapshot(const uint8_t* base, const std::string& dir) {
   static int index = 0;
-  auto load = [base](uint32_t addr) {
-    uint32_t v;
-    std::memcpy(&v, base + addr, 4);
-    return __builtin_bswap32(v);
-  };
   auto write = [](const std::string& path, const uint8_t* data, size_t size) {
     if (FILE* f = std::fopen(path.c_str(), "wb")) {
       std::fwrite(data, 1, size, f);
@@ -219,7 +216,7 @@ void SaveSnapshot(const uint8_t* base, const std::string& dir) {
   // .data/.bss of the XEX, and the battle state the game pointer refers to.
   constexpr uint32_t kDataStart = 0x82890000, kDataSize = 0x01171DFC;
   write(dir + "/snap" + std::to_string(index) + "_data.bin", base + kDataStart, kDataSize);
-  if (const uint32_t game = load(0x839EEA98)) {
+  if (const uint32_t game = game::LoadGuestAddress(base, game::kGamePointer)) {
     write(dir + "/snap" + std::to_string(index) + "_game.bin", base + game, 0x40000);
   }
   REXLOG_INFO("snapshot {} saved to {}", index, dir);
