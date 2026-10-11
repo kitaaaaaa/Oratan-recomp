@@ -24,6 +24,7 @@ set(ORATAN_SOURCES
     src/relaunch.cpp
     src/local_versus.cpp
     src/select_pages.cpp
+    src/replay.cpp
     src/decomp/decomp.cpp
     src/decomp/robot_loader.cpp
 )
