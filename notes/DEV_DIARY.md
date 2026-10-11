@@ -59,6 +59,9 @@ Things that were tried and **dropped** (so they are not tried again blindly):
 
 ## 3. How the game works
 
+The fixed addresses and structure layouts below are also in `src/game_memory.h` as C++ types
+(with compile-time offset checks); new findings go in both.
+
 ### 3.1 Lineage
 
 The executable is a port of the **Dreamcast Ver.5.45 code base** (internal module names OPEN,
