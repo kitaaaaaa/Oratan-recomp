@@ -122,7 +122,9 @@ reads. `sub_822A71B0` turns both sides' input into robot command words every tic
   image position and sheet, name, panel image). **Training character select**: a 2 × 9 byte
   grid at `0x82010698`, portraits at `0x820106B0`.
 - The robot loader `sub_821C5C30` passes every robot through `sub_821C5060`, which swaps
-  Bal-Bados for its stage-specific forms (Bal-Keros underwater, Bal-Baros in zero gravity).
+  Bal-Bados (robot 1) for its stage-specific forms: Bal-Baros (16) on the water stage (5),
+  Bal-Keros (5) on the final stage (21). Earlier notes had the two forms the other way round.
+  This is the first hand-decompiled function; see section 7.
 
 ## 4. How the 3D models are stored
 
@@ -303,6 +305,32 @@ set-up functions.
 **Native rendering works (2026-10-09).** F1 → Resolution now offers 1920×1080, 2560×1440
 and 3840×2160 rendered natively (60 fps). See `notes\RENDERER_DESIGN.md` → Status for how it
 works and what is left.
+
+## 7. Hand-decompiled functions
+
+Recompiled game functions can be replaced with readable C++ that behaves identically, one
+function at a time (`src/decomp/`). Conventions, set with the first one:
+
+- One file per game area (`src/decomp/robot_loader.cpp`), a plain C++ function with a
+  descriptive name and the original address in a comment, and a `REX_HOOK_RAW` that does the
+  register and memory plumbing.
+- Guest data through `src/game_memory.h`; anything learned goes into it, with `static_assert`s.
+- `decomp_use_originals` (calls the original code instead) and `decomp_verify` (compares the
+  rewrite with the original over every input it can construct, on first use, and logs
+  `decomp verify sub_X: N inputs, M mismatches`).
+- No generated code or disassembly is committed; the logic is described in words.
+
+**`sub_821C5060`, Bal-Bados' form for the stage** (2026-10-11). Takes a robot number (r3) and
+returns it unchanged unless it is Bal-Bados or one of its forms. For those it returns plain
+Bal-Bados in two situations marked by two game fields (`Game::scene_mode`/`scene_param` at
++0x240/+0x242: (3, 21), or (0, 31) during the Ending module), otherwise Bal-Baros if the next
+stage is the water stage, Bal-Keros if it is the final stage, else Bal-Bados. When `scene_mode`
+is 0 it also checks the stage stored in a per-side record (`Game::side_records`, 300 bytes each
+at +0x96E4, side chosen by the byte at +0x614D). It reads the game pointer and module byte
+through two one-line getters and writes no memory. Verified: 7,765,800 input combinations
+(robots −2…40, every module, stages −2…40, edge values of the two fields, both sides, five side
+stages), 0 mismatches; a deliberately broken rewrite gave 27,138 mismatches, so the check works.
+The verifier saves and restores every byte it changes.
 
 ---
 

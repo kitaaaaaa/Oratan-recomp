@@ -79,9 +79,13 @@ enum class CameraView : uint8_t {
 // Robot numbers confirmed so far (Robot::robot_id, kRobotFileNames index, roster
 // bytes). 0 is "dor" and 18 the last entry; the rest are not yet matched to names.
 namespace robot_id {
-inline constexpr uint8_t kBalKeros = 5;   // Bal-Bados' underwater form
+// Bal-Bados and its two stage forms (sub_821C5060, src/decomp/robot_loader.cpp):
+// file names "bbd", "bks" and "bbs". Earlier notes had the forms the other way
+// round; the code gives Bal-Baros on the water stage and Bal-Keros on the final one.
+inline constexpr uint8_t kBalBados = 1;
+inline constexpr uint8_t kBalKeros = 5;   // Bal-Bados' form on the final stage (stage_id::kTangram)
 inline constexpr uint8_t kAjim = 15;
-inline constexpr uint8_t kBalBaros = 16;  // Bal-Bados' zero-gravity form
+inline constexpr uint8_t kBalBaros = 16;  // Bal-Bados' form on the water stage (stage_id::kWater)
 inline constexpr uint8_t kBradtos = 17;
 inline constexpr uint8_t kTangram = 18;   // "tgm"; empty motion file, not playable
 }  // namespace robot_id
@@ -89,9 +93,10 @@ inline constexpr uint8_t kTangram = 18;   // "tgm"; empty motion file, not playa
 // Stage numbers confirmed so far (kNextStage, StageCard::stage).
 namespace stage_id {
 inline constexpr int32_t kRandom = -1;  // carousel entry 0
+inline constexpr int32_t kWater = 5;    // "water"
 inline constexpr int32_t kDistortedShrine = 10;
 inline constexpr int32_t kSpaceCarrier = 16;  // no files
-inline constexpr int32_t kTangram = 21;       // last entry of the stage tables
+inline constexpr int32_t kTangram = 21;       // "final"; last entry of the stage tables
 inline constexpr int32_t kTangramCore = 22;   // past the end of the stage tables
 }  // namespace stage_id
 
@@ -138,15 +143,36 @@ static_assert(offsetof(Robot, bone_table) == 0x4B8);
 
 // The battle state, at *kGamePointer. Only the start is laid out; the full
 // size isn't known (debug snapshots save 0x40000 bytes of it).
+// A per-side record in Game (side_records). 300 bytes; only the first field is known.
+struct GameSideRecord {
+  be<int32_t> stage;  // a stage number: sub_821C5060 checks it for the water / final stage
+  uint8_t unk_004[300 - 4];
+};
+static_assert(sizeof(GameSideRecord) == 300);
+
 struct Game {
   be<float> camera[16];  // 4x4 matrix the frame is drawn with
+  uint8_t unk_0040[0x240 - 0x40];
+  // Two values whose meaning isn't known yet. sub_821C5060 keeps plain Bal-Bados
+  // when they are (3, 21), or (0, 31) in the Ending module, and reads the
+  // side record's stage only when scene_mode is 0.
+  be<uint16_t> scene_mode;   // +0x240
+  be<uint16_t> scene_param;  // +0x242
   // Not yet typed: game+0x614C (24908) stays 1 through Arcade's Continue
   // screen; game+0x614E (24910) only drops at Game Over.
-  uint8_t unk_0040[0x6150 - 0x40];
+  uint8_t unk_0244[0x614D - 0x244];
+  int8_t record_side;  // +0x614D: which side_records entry sub_821C5060 reads
+  uint8_t unk_614E[0x6150 - 0x614E];
   Robot robots[2];  // side 1 (DNA), side 2 (RNA)
-  uint8_t unk_8470[0xCF85 - 0x8470];
+  uint8_t unk_8470[0x96E4 - 0x8470];
+  GameSideRecord side_records[2];  // +0x96E4
+  uint8_t unk_993C[0xCF85 - 0x993C];
   CameraView camera_view;  // which view Draw renders (split screen sets it per view)
 };
+static_assert(offsetof(Game, scene_mode) == 0x240);
+static_assert(offsetof(Game, scene_param) == 0x242);
+static_assert(offsetof(Game, record_side) == 24909);
+static_assert(offsetof(Game, side_records) == 38628);
 static_assert(offsetof(Game, robots) == 0x6150);
 static_assert(offsetof(Game, robots) + offsetof(Robot, cpu_controlled) == 25021);
 static_assert(offsetof(Game, robots) + sizeof(Robot) + offsetof(Robot, cpu_controlled) == 29517);
