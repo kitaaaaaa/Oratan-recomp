@@ -40,6 +40,19 @@ inline constexpr uint32_t kControllerStates = 0x829BF2A8;
 inline constexpr uint32_t kActiveController = 0x8289030C;
 // ControllerMasks: per-controller bit masks (bit n = controller n).
 inline constexpr uint32_t kControllerMasks = 0x829B2268;
+// PlayerActions[2]: each player's input actions (sub_82187C28 returns side's
+// record; any other side gets side 0's). sub_822AABE0 builds the robot
+// command word from them.
+inline constexpr uint32_t kPlayerActions = 0x82AFF1E0;
+// OnlineInput: a second source of command words that replaces the players'
+// when active (sub_8213D830/890/8E0); probably Xbox Live versus.
+inline constexpr uint32_t kOnlineInput = 0x829BF3A0;
+// CommandCapture: when `active` is set, sub_822A71B0 only stores side 0's
+// command word here and builds no robot commands (meaning not yet known).
+inline constexpr uint32_t kCommandCapture = 0x839C28AC;
+// Stored four times into Game::input_sources each tick (sub_82113A98 returns
+// it whatever its argument); what it points to isn't known yet.
+inline constexpr uint32_t kInputSource = 0x829B2DE0;
 // be<int32_t>: stage number of the next fight (the Training stage select stores it here).
 inline constexpr uint32_t kNextStage = 0x83876DF4;
 // be<uint32_t>[22]: guest pointers to stage file names (stage -> "carrier", "duct", ...).
@@ -112,6 +125,30 @@ inline constexpr uint16_t kResults = 0x14;      // ~6.5 s; a win goes back to kL
 inline constexpr uint16_t kContinue = 0x15;     // Arcade Continue screen (0x16 next frame)
 inline constexpr uint16_t kGameOver = 0x17;     // Game Over (0x18 next frame), then OPEN
 }  // namespace battle_step
+
+// A robot command word (Game::robot_commands; sub_822AABE0). Virtual-On
+// is played with two levers: each has four directions and two buttons. Which
+// bit is which direction or button isn't confirmed yet; the names say lever
+// and position only. The action numbers are PlayerActions bits.
+namespace command {
+inline constexpr uint16_t kLeftDirection0 = 0x0001;   // action 3
+inline constexpr uint16_t kLeftDirection1 = 0x0002;   // action 4
+inline constexpr uint16_t kLeftDirection2 = 0x0004;   // action 5
+inline constexpr uint16_t kLeftDirection3 = 0x0008;   // action 6
+inline constexpr uint16_t kRightDirection0 = 0x0010;  // action 12
+inline constexpr uint16_t kRightDirection1 = 0x0020;  // action 13
+inline constexpr uint16_t kRightDirection2 = 0x0040;  // action 14
+inline constexpr uint16_t kRightDirection3 = 0x0080;  // action 15
+inline constexpr uint16_t kLeftButton0 = 0x0100;      // action 8
+inline constexpr uint16_t kLeftButton1 = 0x0200;      // action 9
+inline constexpr uint16_t kRightButton0 = 0x0400;     // action 10
+inline constexpr uint16_t kRightButton1 = 0x0800;     // action 11
+inline constexpr uint16_t kStart = 0x1000;            // action 2; never stored in the robot
+                                                      // commands (sub_822A71B0 clears it)
+inline constexpr uint16_t kExtra0 = 0x2000;           // action 7
+inline constexpr uint16_t kExtra1 = 0x4000;           // only from OnlineInput
+inline constexpr uint16_t kExtra2 = 0x8000;           // only from OnlineInput
+}  // namespace command
 
 // Robot numbers confirmed so far (Robot::robot_id, kRobotFileNames index, roster
 // bytes). 0 is "dor" and 18 the last entry; the rest are not yet matched to names.
@@ -191,6 +228,29 @@ static_assert(offsetof(Robot, heap_pointer_0C8) == 0xC8);
 static_assert(offsetof(Robot, heap_pointer_2D8) == 0x2D8);
 static_assert(offsetof(Robot, bone_table) == 0x4B8);
 
+// One input channel of a side (LeverInput): now, at the previous tick, and
+// pressed this tick (now and not previous).
+struct InputChannel {
+  be<uint16_t> now;
+  be<uint16_t> previous;
+  be<uint16_t> pressed;
+  uint8_t unk_6[2];
+};
+static_assert(sizeof(InputChannel) == 8);
+
+// One side's command word split into channels (Game::levers; sub_822A7070).
+// left: the left lever's directions (bits 0x10-0x80, from command 0x1-0x8)
+// and buttons (0x2, 0x1 from command 0x100, 0x200); right: the same for the
+// right lever (from 0x10-0x80 and 0x400, 0x800); extra: command 0x1000,
+// 0x2000, 0x4000, 0x8000 as 0x10, 0x20, 0x08, 0x04.
+struct LeverInput {
+  InputChannel left;
+  InputChannel right;
+  InputChannel extra;
+  uint8_t unk_18[8];
+};
+static_assert(sizeof(LeverInput) == 32);
+
 // The battle state, at *kGamePointer. Only the start is laid out; the full
 // size isn't known (debug snapshots save 0x40000 bytes of it).
 // A per-side record in Game (side_records). 300 bytes; only the first field is known.
@@ -208,17 +268,23 @@ struct Game {
   // each module's scene code.
   be<int16_t> scene;        // +0x240
   be<uint16_t> scene_step;  // +0x242
+  uint8_t unk_0244[0x264 - 0x244];
+  LeverInput levers[2];  // +0x264, per side (sub_822A7070)
+  uint8_t unk_02A4[0x6148 - 0x2A4];
+  // This tick's command word per side (sub_822A71B0), without command::kStart.
+  be<uint16_t> robot_commands[2];  // +0x6148
   // Not yet typed: game+0x614C (24908) is 1 in Arcade and Score Attack
   // battles (0 in Training); game+0x614E (24910) is 1 from a run's first
   // fight and drops at Game Over (battle_step::kGameOver + 1); game+0x614F
   // counts the stages started in the run (a continue counts again).
-  uint8_t unk_0244[0x614D - 0x244];
+  uint8_t unk_614C;
   int8_t record_side;  // +0x614D: which side_records entry sub_821C5060 reads
   uint8_t unk_614E[0x6150 - 0x614E];
   Robot robots[2];  // side 1 (DNA), side 2 (RNA)
   uint8_t unk_8470[0x96E4 - 0x8470];
   GameSideRecord side_records[2];  // +0x96E4
-  uint8_t unk_993C[0xCEB0 - 0x993C];
+  uint8_t unk_993C[0xCEA0 - 0x993C];
+  be<uint32_t> input_sources[4];  // +0xCEA0: kInputSource, stored each tick by sub_822A71B0
   // The running module's file name ("GAME.BIN"), copied by the switcher. The
   // buffer's real size isn't known; this is the gap to the next known field.
   char module_file[0xCEF7 - 0xCEB0];
@@ -231,6 +297,9 @@ struct Game {
 static_assert(offsetof(Game, scene) == 0x240);
 static_assert(offsetof(Game, scene_step) == 0x242);
 static_assert(offsetof(Game, module_file) == 0xCEB0);
+static_assert(offsetof(Game, levers) == 612);
+static_assert(offsetof(Game, robot_commands) == 24904);
+static_assert(offsetof(Game, input_sources) == 52896);
 static_assert(offsetof(Game, module_switch_cleared) == 52983);
 static_assert(offsetof(Game, module_switch_set) == 52985);
 static_assert(offsetof(Game, record_side) == 24909);
@@ -261,11 +330,61 @@ struct ControllerMasks {
 };
 static_assert(sizeof(ControllerMasks) == 12);
 
-// One controller's state (kControllerStates). 60 bytes, not yet mapped.
+// One controller's state (kControllerStates), filled by sub_821135C0 every
+// tick. It keeps its own history: `pressed` and `released` are computed
+// against `previous` (the last read's `held`), and an unchanged XInput packet
+// number skips the update.
 struct ControllerState {
-  uint8_t unk_00[60];
+  uint8_t unk_00[4];
+  be<uint32_t> held;      // +4: buttons held, in the game's own bit layout
+  be<uint32_t> previous;  // +8: `held` at the previous read
+  be<uint32_t> pressed;   // +12: held and not previous
+  be<uint32_t> released;  // +16: previous and not held
+  uint8_t unk_14[28 - 20];
+  be<uint32_t> packet_number;  // +28: the last XInput packet number processed
+  uint8_t unk_20[60 - 32];
 };
 static_assert(sizeof(ControllerState) == 60);
+static_assert(offsetof(ControllerState, held) == 4);
+static_assert(offsetof(ControllerState, pressed) == 12);
+static_assert(offsetof(ControllerState, packet_number) == 28);
+
+// One player's input actions (kPlayerActions). 2152 bytes; only the action
+// bits are known: bit n of the big-endian words from +32 is action n
+// (sub_82187FB0; it checks numbers from 99 up with sub_8213EA40 first).
+struct PlayerActions {
+  uint8_t unk_000[32];
+  be<uint32_t> action_bits[4];
+  uint8_t unk_030[2152 - 48];
+
+  bool Has(uint32_t action) const { return (action_bits[action >> 5] >> (action & 31)) & 1; }
+};
+static_assert(sizeof(PlayerActions) == 2152);
+static_assert(offsetof(PlayerActions, action_bits) == 32);
+
+// The online command source (kOnlineInput); only what sub_8213D890/8E0 read.
+struct OnlineInput {
+  uint8_t unk_00[76];
+  uint8_t active;  // +76
+  uint8_t unk_4D[88 - 77];
+  uint8_t ready;   // +88
+  uint8_t unk_59[100 - 89];
+  be<uint16_t> commands[2];  // +100: per side
+  uint8_t unk_68[128 - 104];
+  be<int32_t> state;  // +128: used only when not negative
+};
+static_assert(offsetof(OnlineInput, active) == 76);
+static_assert(offsetof(OnlineInput, ready) == 88);
+static_assert(offsetof(OnlineInput, commands) == 100);
+static_assert(offsetof(OnlineInput, state) == 128);
+
+// kCommandCapture.
+struct CommandCapture {
+  be<uint32_t> active;
+  uint8_t unk_04[20 - 4];
+  be<uint16_t> command;  // +20: side 0's command word while active
+};
+static_assert(offsetof(CommandCapture, command) == 20);
 
 // One entry of the Training stage select carousel (kStageCarousel). 24 bytes.
 struct StageCard {

@@ -14,6 +14,9 @@ REXCVAR_DEFINE_BOOL(decomp_use_originals, false, "Oratan/Decomp",
 REXCVAR_DEFINE_BOOL(decomp_verify, false, "Oratan/Decomp",
                     "Developer: each decompiled function compares itself with the original on "
                     "every input it can construct, the first time it runs, and logs the result");
+REXCVAR_DEFINE_BOOL(decomp_verify_calls, false, "Oratan/Decomp",
+                    "Developer: decompiled functions that depend on input history compare "
+                    "themselves with the original on every call (use while replaying)");
 
 namespace oratan::decomp {
 
@@ -103,6 +106,18 @@ void UndoSectionChanges(uint8_t* base, const std::vector<uint8_t>& from,
 
 }  // namespace
 
+bool Verifier::ChangesByItself(size_t offset) const {
+  // The byte was just put back to its starting value; with neither function
+  // running, another thread is the only thing that can change it.
+  const volatile uint8_t* byte = SectionHost(base_) + offset;
+  const uint8_t restored = *byte;
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
+  while (std::chrono::steady_clock::now() < until) {
+    if (*byte != restored) return true;
+  }
+  return false;
+}
+
 std::string Verifier::Compare(const std::function<void()>& setup,
                               const std::function<int64_t()>& original,
                               const std::function<int64_t()>& rewrite, bool section) {
@@ -135,6 +150,13 @@ std::string Verifier::Compare(const std::function<void()>& setup,
   }
   if (section) {
     for (size_t i = 0; i < kDataSection.size; ++i) {
+      if (section_original_[i] != section_rewrite_[i] && !section_volatile_[i] &&
+          ChangesByItself(i)) {
+        section_volatile_[i] = 1;  // something else writes it: leave it out from now on
+        REXLOG_INFO("decomp verify {}: data section {:08X} changes by itself, not compared",
+                    function_, kDataSection.address + uint32_t(i));
+        continue;
+      }
       if (section_original_[i] != section_rewrite_[i] && !section_volatile_[i]) {
         return fmt::format("outside the declared ranges: {} +{:#x} ({:08X}): {:02X} vs {:02X}",
                            kDataSection.name, i, kDataSection.address + uint32_t(i),
@@ -173,6 +195,16 @@ bool Verifier::Check(const std::function<void()>& setup, const std::function<int
   }
   ++mismatches_;
   return false;
+}
+
+bool Verifier::CheckCall(const std::function<int64_t()>& original,
+                         const std::function<int64_t()>& rewrite,
+                         const std::function<std::string()>& describe, uint32_t report_every) {
+  const bool matched = Check([] {}, original, rewrite, describe);
+  if (inputs_ % report_every == 0) {
+    REXLOG_INFO("decomp verify {}: {} calls, {} mismatches", function_, inputs_, mismatches_);
+  }
+  return matched;
 }
 
 void Verifier::Finish() {

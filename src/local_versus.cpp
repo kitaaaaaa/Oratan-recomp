@@ -51,7 +51,6 @@ REXCVAR_DEFINE_BOOL(split_swap_sides, false, "Oratan",
                     "staggered, the right monitor with one monitor per player)");
 
 REX_EXTERN(__imp__sub_82123758);
-REX_EXTERN(__imp__sub_822A71B0);
 
 namespace {
 
@@ -109,10 +108,13 @@ static void AssignMissingControllers(uint8_t* base) {
   }
 }
 
-// sub_822A71B0: builds both sides' robot command words for this frame.
-REX_HOOK_RAW(sub_822A71B0) {
+// Around sub_822A71B0 (both sides' robot command words for this tick; hooked
+// in src/decomp/robot_control.cpp).
+void oratan::BeforeRobotCommands(uint8_t* base) {
   if (LocalVersusOn()) AssignMissingControllers(base);
-  __imp__sub_822A71B0(ctx, base);
+}
+
+void oratan::AfterRobotCommands(uint8_t* base) {
   if (const int32_t camera = REXCVAR_GET(view_camera);
       camera >= 0 && g_drawing_view == rex::system::split_screen::kNoView) {
     if (game::Game* g = game::GetGame(base)) g->camera_view = game::CameraView(camera);

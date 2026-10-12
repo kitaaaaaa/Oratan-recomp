@@ -19,6 +19,7 @@
 
 REXCVAR_DECLARE(bool, decomp_use_originals);
 REXCVAR_DECLARE(bool, decomp_verify);
+REXCVAR_DECLARE(bool, decomp_verify_calls);
 
 namespace oratan::decomp {
 
@@ -63,7 +64,9 @@ inline constexpr GuestRange kDataSection = {0x82890000, 0x01171DFC, "data sectio
 // back before the rewrite runs, and only bytes where the two runs end up
 // different count. Other guest threads change some bytes all the time (a
 // counter at 839F65AA, for one): the Verifier finds them by watching the
-// section for a moment before the sweep and leaves them out.
+// section for a moment before the sweep and leaves them out, and watches any
+// differing byte for 20 ms before counting it (a flag another thread sets,
+// such as 839FFBF7 at a fight's start).
 class Verifier {
  public:
   Verifier(const char* function, uint8_t* base, std::vector<GuestRange> ranges,
@@ -78,6 +81,15 @@ class Verifier {
   // Restores the saved state and logs the summary line.
   void Finish();
 
+  // Live calls (functions that depend on history, checked while the game or a
+  // replay runs): the game state at the call is the input. Compares the
+  // original with the rewrite from that state and leaves the state as it was
+  // at the call, for the caller to run the real call afterwards. Logs
+  // "decomp verify sub_X: N calls, M mismatches" every `report_every` calls.
+  bool CheckCall(const std::function<int64_t()>& original,
+                 const std::function<int64_t()>& rewrite,
+                 const std::function<std::string()>& describe, uint32_t report_every = 3600);
+
   uint32_t inputs() const { return inputs_; }
   uint32_t mismatches() const { return mismatches_; }
 
@@ -86,6 +98,9 @@ class Verifier {
   std::string Compare(const std::function<void()>& setup,
                       const std::function<int64_t()>& original,
                       const std::function<int64_t()>& rewrite, bool section);
+
+  // Whether a data section byte changes within a moment with nothing running.
+  bool ChangesByItself(size_t offset) const;
 
   const char* function_;
   uint8_t* base_;
