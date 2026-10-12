@@ -11,29 +11,26 @@
 // by replaying the same session through both versions, and regression tests.
 //
 // How:
-//   - Ticks are counted by Update (sub_821236E0, vtable slot 2 of the run loop
-//     object), one call per 1/60 s game tick, menus included, from boot.
-//   - Controllers are read by sub_821135C0 into game::kControllerStates
-//     (4 x 60 bytes). Recording saves those bytes after each read, tagged with
-//     the tick; replaying overwrites them with the recording's, read for read.
+//   - Ticks and controller reads come from tick_hooks.cpp (Update and
+//     sub_821135C0). Recording saves the controller buffer
+//     (game::kControllerStates, 4 x 60 bytes) after each read, tagged with the
+//     tick; replaying overwrites it with the recording's, read for read.
 //     Anything the game derives from that buffer follows the recording.
-//   - After each Update, a few regions are hashed (see HashState). Recording
-//     stores the hashes; replaying compares them.
+//   - After each Update the state fingerprint (state_hash.h) is taken.
+//     Recording stores it; replaying compares it.
 // Replays always start at boot: the recomp has no save states.
 
 #include <rex/cvar.h>
-#include <rex/hook.h>
 #include <rex/logging.h>
 
 #include "game_memory.h"
+#include "state_hash.h"
+#include "tick_hooks.h"
 
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <thread>
-#include <vector>
 
 REXCVAR_DEFINE_STRING(replay_record, "", "Oratan/Replay",
                       "Developer: record every controller read and a per-tick state "
@@ -49,9 +46,6 @@ REXCVAR_DEFINE_INT32(replay_hash_bytes, 0xD000, "Oratan/Replay",
                      "Developer: bytes of the battle state (game::Game) included in the per-tick "
                      "fingerprint; the default covers every field mapped so far")
     .range(0, 0x40000);
-
-REX_EXTERN(__imp__sub_821236E0);
-REX_EXTERN(__imp__sub_821135C0);
 
 namespace {
 
@@ -69,9 +63,7 @@ constexpr uint32_t kVersion = 2;
 constexpr uint32_t kControllers = 4;
 constexpr uint32_t kInputBytes = kControllers * sizeof(game::ControllerState);
 
-enum Region : uint32_t { kGameRegion, kRobot1Region, kRobot2Region, kFlowRegion, kRegions };
-constexpr const char* kRegionNames[kRegions] = {"game", "robot 1", "robot 2",
-                                                "inputs/module/stage"};
+constexpr uint32_t kRegions = oratan::kStateRegions;
 
 struct Header {
   char magic[4];
@@ -81,60 +73,7 @@ struct Header {
   int32_t hash_bytes;  // replay_hash_bytes at record time
 };
 
-using Hashes = std::array<uint64_t, kRegions>;
-
-// FNV-1a; the regions are small (tens of KB per tick).
-uint64_t Hash(const uint8_t* data, size_t size, uint64_t h = 0xCBF29CE484222325ull) {
-  for (size_t i = 0; i < size; ++i) {
-    h = (h ^ data[i]) * 0x100000001B3ull;
-  }
-  return h;
-}
-
-// Robot fields holding guest heap pointers: where the allocator put things can
-// differ between sessions with identical gameplay (the native renderer on and
-// off placed them 0xC1A0 apart), so they are zeroed before hashing.
-constexpr size_t kRobotPointerFields[] = {offsetof(game::Robot, heap_pointer_0B4),
-                                          offsetof(game::Robot, heap_pointer_0C8),
-                                          offsetof(game::Robot, heap_pointer_2D8)};
-
-// Zeroes the robot pointer fields that fall inside `copy`, a copy of guest
-// bytes that starts at Game offset `start`.
-void MaskPointers(uint8_t* copy, size_t start, size_t size) {
-  for (size_t robot = 0; robot < 2; ++robot) {
-    for (size_t field : kRobotPointerFields) {
-      const size_t at = offsetof(game::Game, robots) + robot * sizeof(game::Robot) + field;
-      if (at >= start && at + 4 <= start + size) std::memset(copy + (at - start), 0, 4);
-    }
-  }
-}
-
-// The state fingerprint: the battle state (first replay_hash_bytes), each robot
-// record on its own (so a drift says which robot), and the side input records,
-// module and next stage, with the robot heap pointers left out. Outside
-// battles the game regions hash to 0.
-Hashes HashState(uint8_t* base, int32_t hash_bytes) {
-  Hashes h{};
-  if (game::Game* g = game::GetGame(base)) {
-    static std::vector<uint8_t> copy;
-    copy.assign(reinterpret_cast<const uint8_t*>(g), reinterpret_cast<const uint8_t*>(g) + hash_bytes);
-    MaskPointers(copy.data(), 0, copy.size());
-    h[kGameRegion] = Hash(copy.data(), copy.size());
-    for (int robot = 0; robot < 2; ++robot) {
-      const size_t start = offsetof(game::Game, robots) + robot * sizeof(game::Robot);
-      copy.assign(reinterpret_cast<const uint8_t*>(&g->robots[robot]),
-                  reinterpret_cast<const uint8_t*>(&g->robots[robot]) + sizeof(game::Robot));
-      MaskPointers(copy.data(), start, copy.size());
-      h[robot == 0 ? kRobot1Region : kRobot2Region] = Hash(copy.data(), copy.size());
-    }
-  }
-  uint64_t flow = Hash(reinterpret_cast<const uint8_t*>(game::GetSideInputs(base)),
-                       2 * sizeof(game::SideInput));
-  flow = Hash(base + game::kModuleIndex, 1, flow);
-  flow = Hash(base + game::kNextStage, 4, flow);
-  h[kFlowRegion] = flow;
-  return h;
-}
+using Hashes = oratan::StateHashes;
 
 // Writes the hashed regions after `tick` next to the recording, for diffing a
 // recording run against a drifting replay.
@@ -142,15 +81,8 @@ void DumpState(uint8_t* base, const std::string& file, uint32_t tick, const char
                int32_t hash_bytes) {
   const size_t slash = file.find_last_of("/\\");
   const std::string dir = slash == std::string::npos ? "." : file.substr(0, slash);
-  const std::string path = dir + "/replay_tick" + std::to_string(tick) + "_" + mode + ".bin";
-  FILE* f = std::fopen(path.c_str(), "wb");
-  if (!f) return;
-  if (game::Game* g = game::GetGame(base)) {
-    std::fwrite(g, 1, size_t(hash_bytes), f);
-  }
-  std::fwrite(game::GetSideInputs(base), 1, 2 * sizeof(game::SideInput), f);
-  std::fclose(f);
-  REXLOG_INFO("replay: state after tick {} written to {}", tick, path);
+  oratan::DumpStateRegions(
+      base, dir + "/replay_tick" + std::to_string(tick) + "_" + mode + ".bin", hash_bytes);
 }
 
 // --- Session -------------------------------------------------------------------
@@ -162,9 +94,6 @@ struct Session {
   std::string file_name;
   FILE* file = nullptr;
   int32_t hash_bytes = 0;
-  uint32_t tick = 0;  // Update calls started so far
-  std::thread::id game_thread;  // the thread running Update
-  bool have_game_thread = false;
   bool warned_thread = false;
 
   // Replay: the next unread record.
@@ -175,11 +104,6 @@ struct Session {
 
   // No logging here: the logger may already be gone at exit.
   ~Session() { Stop("game exit", false); }
-
-  // From whichever hook runs first, so reads before the first Update count too.
-  void EnsureStarted() {
-    if (mode == Mode::kOff) Start();
-  }
 
   void Start() {
     const std::string play = REXCVAR_GET(replay_play);
@@ -231,6 +155,7 @@ struct Session {
 
   void Stop(const char* why, bool log = true) {
     if (!file) return;
+    const uint32_t tick = oratan::GameTick();
     if (mode == Mode::kRecord) {
       const char type = 'E';
       std::fwrite(&type, 1, 1, file);
@@ -258,7 +183,7 @@ struct Session {
   }
 
   void CheckThread() {
-    if (have_game_thread && std::this_thread::get_id() != game_thread && !warned_thread) {
+    if (!oratan::OnGameThread() && !warned_thread) {
       warned_thread = true;
       REXLOG_WARN("replay: controllers read outside the Update thread; replays may not be exact");
     }
@@ -266,6 +191,7 @@ struct Session {
 
   // After the game read the controllers.
   void OnControllerRead(uint8_t* base) {
+    const uint32_t tick = oratan::GameTick();
     uint8_t* states = base + game::kControllerStates;
     if (mode == Mode::kRecord) {
       CheckThread();
@@ -300,7 +226,8 @@ struct Session {
 
   // After each Update.
   void OnTickEnd(uint8_t* base) {
-    const Hashes now = HashState(base, hash_bytes);
+    const uint32_t tick = oratan::GameTick();
+    const Hashes now = oratan::HashState(base, hash_bytes);
     const int32_t dump_tick = REXCVAR_GET(replay_dump_tick);
     if (mode == Mode::kRecord) {
       const char type = 'H';
@@ -334,10 +261,7 @@ struct Session {
       }
       ReadNextHeader();
       if (recorded != now) {
-        std::string regions;
-        for (uint32_t r = 0; r < kRegions; ++r) {
-          if (recorded[r] != now[r]) regions += std::string(regions.empty() ? "" : ", ") + kRegionNames[r];
-        }
+        const std::string regions = oratan::DifferingRegions(recorded, now);
         if (drifts++ == 0) {
           REXLOG_ERROR("replay: first drift after tick {}: {} differ", tick, regions);
           DumpState(base, file_name, tick, "replay", hash_bytes);
@@ -357,29 +281,22 @@ Session g_session;
 
 }  // namespace
 
-// sub_821236E0: the run loop's Update, one game tick.
-REX_HOOK_RAW(sub_821236E0) {
-  if (!g_session.have_game_thread) {
-    g_session.game_thread = std::this_thread::get_id();
-    g_session.have_game_thread = true;
+namespace oratan::replay {
+
+void Start() { g_session.Start(); }
+
+bool Playing() { return g_session.mode == Mode::kPlay; }
+
+void OnControllerRead(uint8_t* base) {
+  if (g_session.mode == Mode::kRecord || g_session.mode == Mode::kPlay) {
+    g_session.OnControllerRead(base);
   }
-  g_session.EnsureStarted();
-  if (g_session.mode == Mode::kFinished) {
-    __imp__sub_821236E0(ctx, base);
-    return;
-  }
-  ++g_session.tick;
-  __imp__sub_821236E0(ctx, base);
+}
+
+void OnTickEnd(uint8_t* base) {
   if (g_session.mode == Mode::kRecord || g_session.mode == Mode::kPlay) {
     g_session.OnTickEnd(base);
   }
 }
 
-// sub_821135C0: reads the controllers into game::kControllerStates.
-REX_HOOK_RAW(sub_821135C0) {
-  g_session.EnsureStarted();
-  __imp__sub_821135C0(ctx, base);
-  if (g_session.mode == Mode::kRecord || g_session.mode == Mode::kPlay) {
-    g_session.OnControllerRead(base);
-  }
-}
+}  // namespace oratan::replay

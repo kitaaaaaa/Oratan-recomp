@@ -25,6 +25,9 @@ set(ORATAN_SOURCES
     src/local_versus.cpp
     src/select_pages.cpp
     src/replay.cpp
+    src/state_hash.cpp
+    src/tick_hooks.cpp
+    src/netplay.cpp
     src/decomp/decomp.cpp
     src/decomp/game_flow.cpp
     src/decomp/menu.cpp
@@ -44,6 +47,10 @@ else()
 endif()
 
 rexglue_setup_target(oratan GPU_PLUGINS xenos)
+
+if(WIN32)
+    target_link_libraries(oratan PRIVATE ws2_32)  # netplay sockets
+endif()
 
 # Window title without the SDK build tag (see src/sdk_version_override.h).
 set_source_files_properties("${REXGLUE_SHARE_DIR}/rex_app.cpp"

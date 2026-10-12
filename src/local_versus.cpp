@@ -19,6 +19,7 @@
 #include <rex/system/split_screen.h>
 
 #include "dual_monitor.h"
+#include "netplay.h"
 #include "game_memory.h"
 #include "local_versus.h"
 
@@ -64,10 +65,26 @@ bool InBattle(uint8_t* base) {
   return game::GetGame(base) && game::IsBattleModule(game::CurrentModule(base));
 }
 
+// Netplay always plays as local versus: the other machine's player drives
+// controller 2, so it must control the opponent.
+bool LocalVersusOn() { return REXCVAR_GET(local_versus) || oratan::NetplayActive(); }
+
+// Netplay: the side this machine's player controls (whose controller is this
+// machine's slot in the shared input), or -1.
+int NetplayLocalSide(uint8_t* base) {
+  const int32_t slot = oratan::NetplayLocalSlot();
+  if (slot < 0) return -1;
+  game::SideInput* inputs = game::GetSideInputs(base);
+  for (int side = 0; side < 2; ++side) {
+    if (inputs[side].controller == slot) return side;
+  }
+  return -1;
+}
+
 }  // namespace
 
 void oratan::OnSideChosen(uint8_t* base, uint32_t side) {
-  if (!REXCVAR_GET(local_versus) || side > 1) return;
+  if (!LocalVersusOn() || side > 1) return;
 
   game::SideInput* inputs = game::GetSideInputs(base);
   const int32_t own_pad = inputs[side].controller;
@@ -94,7 +111,7 @@ static void AssignMissingControllers(uint8_t* base) {
 
 // sub_822A71B0: builds both sides' robot command words for this frame.
 REX_HOOK_RAW(sub_822A71B0) {
-  if (REXCVAR_GET(local_versus)) AssignMissingControllers(base);
+  if (LocalVersusOn()) AssignMissingControllers(base);
   __imp__sub_822A71B0(ctx, base);
   if (const int32_t camera = REXCVAR_GET(view_camera);
       camera >= 0 && g_drawing_view == rex::system::split_screen::kNoView) {
@@ -111,7 +128,7 @@ REX_HOOK_RAW(sub_822A71B0) {
   game::Game* g = game::GetGame(base);
   for (int side = 0; side < 2; ++side) {
     uint8_t* cpu_flag = &g->robots[side].cpu_controlled;
-    if (REXCVAR_GET(local_versus)) {
+    if (LocalVersusOn()) {
       if (*cpu_flag == 1) {
         *cpu_flag = 0;
         switched[side] = true;
@@ -133,7 +150,8 @@ REX_HOOK_RAW(sub_82123758) {
   // Only while a stage is under way: Arcade's Continue and Game Over screens
   // also run in the battle module but are drawn once, full screen.
   const bool fighting = g && game::IsFightInProgress(*g, module);
-  const bool active = REXCVAR_GET(split_screen) && fighting;
+  // Netplay: each machine shows its own player's view instead.
+  const bool active = REXCVAR_GET(split_screen) && fighting && !oratan::NetplayActive();
   // Layout for the GPU side to compose with (runtime state, cheap to refresh).
   const int32_t display = REXCVAR_GET(split_display);
   rex::system::split_screen::SetLayout(display == 0 ? rex::system::split_screen::Layout::kStaggered
@@ -161,6 +179,16 @@ REX_HOOK_RAW(sub_82123758) {
   }
   if (!active) {
     g_drawing_view = rex::system::split_screen::kNoView;
+    // Netplay: draw from this machine's robot. Like split screen, the camera is
+    // only changed for the draw and put back, so the game state (and the
+    // fingerprint both machines compare) stays the same on both.
+    if (fighting && NetplayLocalSide(base) == 1) {
+      const game::CameraView saved_camera = g->camera_view;
+      g->camera_view = game::CameraView::kRobot2;
+      __imp__sub_82123758(ctx, base);
+      g->camera_view = saved_camera;
+      return;
+    }
     __imp__sub_82123758(ctx, base);
     return;
   }
@@ -177,7 +205,7 @@ REX_HOOK_RAW(sub_82123758) {
   // still drawn (and presented) first.
   const game::CameraView cameras[2] = {
       game::CameraView::kRobot1,
-      REXCVAR_GET(local_versus) ? game::CameraView::kRobot2 : game::CameraView::kLiveMonitor};
+      LocalVersusOn() ? game::CameraView::kRobot2 : game::CameraView::kLiveMonitor};
   const bool swap = REXCVAR_GET(split_swap_sides);
   for (int32_t view = 0; view < rex::system::split_screen::kViewCount; ++view) {
     camera = cameras[swap ? 1 - view : view];
