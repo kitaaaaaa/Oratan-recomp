@@ -33,6 +33,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 REXCVAR_DEFINE_STRING(replay_record, "", "Oratan/Replay",
                       "Developer: record every controller read and a per-tick state "
@@ -63,7 +64,8 @@ namespace game = oratan::game;
 //   'E' u32 tick                       end (written on a clean stop)
 
 constexpr char kMagic[4] = {'O', 'T', 'R', 'P'};
-constexpr uint32_t kVersion = 1;
+// 2: robot heap pointers left out of the fingerprint.
+constexpr uint32_t kVersion = 2;
 constexpr uint32_t kControllers = 4;
 constexpr uint32_t kInputBytes = kControllers * sizeof(game::ControllerState);
 
@@ -89,15 +91,42 @@ uint64_t Hash(const uint8_t* data, size_t size, uint64_t h = 0xCBF29CE484222325u
   return h;
 }
 
+// Robot fields holding guest heap pointers: where the allocator put things can
+// differ between sessions with identical gameplay (the native renderer on and
+// off placed them 0xC1A0 apart), so they are zeroed before hashing.
+constexpr size_t kRobotPointerFields[] = {offsetof(game::Robot, heap_pointer_0B4),
+                                          offsetof(game::Robot, heap_pointer_0C8),
+                                          offsetof(game::Robot, heap_pointer_2D8)};
+
+// Zeroes the robot pointer fields that fall inside `copy`, a copy of guest
+// bytes that starts at Game offset `start`.
+void MaskPointers(uint8_t* copy, size_t start, size_t size) {
+  for (size_t robot = 0; robot < 2; ++robot) {
+    for (size_t field : kRobotPointerFields) {
+      const size_t at = offsetof(game::Game, robots) + robot * sizeof(game::Robot) + field;
+      if (at >= start && at + 4 <= start + size) std::memset(copy + (at - start), 0, 4);
+    }
+  }
+}
+
 // The state fingerprint: the battle state (first replay_hash_bytes), each robot
 // record on its own (so a drift says which robot), and the side input records,
-// module and next stage. Outside battles the game regions hash to 0.
+// module and next stage, with the robot heap pointers left out. Outside
+// battles the game regions hash to 0.
 Hashes HashState(uint8_t* base, int32_t hash_bytes) {
   Hashes h{};
   if (game::Game* g = game::GetGame(base)) {
-    h[kGameRegion] = Hash(reinterpret_cast<const uint8_t*>(g), size_t(hash_bytes));
-    h[kRobot1Region] = Hash(reinterpret_cast<const uint8_t*>(&g->robots[0]), sizeof(game::Robot));
-    h[kRobot2Region] = Hash(reinterpret_cast<const uint8_t*>(&g->robots[1]), sizeof(game::Robot));
+    static std::vector<uint8_t> copy;
+    copy.assign(reinterpret_cast<const uint8_t*>(g), reinterpret_cast<const uint8_t*>(g) + hash_bytes);
+    MaskPointers(copy.data(), 0, copy.size());
+    h[kGameRegion] = Hash(copy.data(), copy.size());
+    for (int robot = 0; robot < 2; ++robot) {
+      const size_t start = offsetof(game::Game, robots) + robot * sizeof(game::Robot);
+      copy.assign(reinterpret_cast<const uint8_t*>(&g->robots[robot]),
+                  reinterpret_cast<const uint8_t*>(&g->robots[robot]) + sizeof(game::Robot));
+      MaskPointers(copy.data(), start, copy.size());
+      h[robot == 0 ? kRobot1Region : kRobot2Region] = Hash(copy.data(), copy.size());
+    }
   }
   uint64_t flow = Hash(reinterpret_cast<const uint8_t*>(game::GetSideInputs(base)),
                        2 * sizeof(game::SideInput));
@@ -281,7 +310,10 @@ struct Session {
       if (dump_tick >= 0 && uint32_t(dump_tick) == tick) {
         DumpState(base, file_name, tick, "record", hash_bytes);
       }
-      if (tick % 600 == 0) std::fflush(file);  // keep most of it if the game crashes
+      // Every tick: closing the window hard-exits the process (ReXApp::OnClosing),
+      // so Stop never runs and nothing unflushed would survive. A replay treats
+      // the end of the file as the end of the recording.
+      std::fflush(file);
       return;
     }
     if (mode != Mode::kPlay) return;

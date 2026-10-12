@@ -311,26 +311,137 @@ works and what is left.
 Recompiled game functions can be replaced with readable C++ that behaves identically, one
 function at a time (`src/decomp/`). Conventions, set with the first one:
 
-- One file per game area (`src/decomp/robot_loader.cpp`), a plain C++ function with a
-  descriptive name and the original address in a comment, and a `REX_HOOK_RAW` that does the
-  register and memory plumbing.
+- One file per game area (`robot_loader.cpp`, `menu.cpp`, `game_flow.cpp`), a plain C++
+  function with a descriptive name and the original address in a comment, and a `REX_HOOK_RAW`
+  that does the register and memory plumbing. One hook per function: other features that
+  need the same function are called from that hook (local versus' `OnSideChosen`).
+- Small helpers the function calls (getters, flag setters, a stricmp) are rewritten inline
+  under their own names when they only touch memory; the sweep covers them too.
 - Guest data through `src/game_memory.h`; anything learned goes into it, with `static_assert`s.
 - `decomp_use_originals` (calls the original code instead) and `decomp_verify` (compares the
   rewrite with the original over every input it can construct, on first use, and logs
   `decomp verify sub_X: N inputs, M mismatches`).
+- The check is `decomp::Verifier` (`decomp.h`): give it the guest ranges the function reads
+  or writes, then per input a setup, the original, the rewrite and a description. It
+  restores the ranges between and after runs, compares results and ranges, re-runs a
+  mismatch (it counts only if the difference repeats), logs the first 20, and prints the
+  summary. The first 50 inputs also compare the whole data section (0x82890000, 18 MB) to
+  catch writes outside the declared ranges; bytes that change by themselves (2, a counter at
+  0x839F65AA) are found by watching the section for 100 ms first and skipped. A sweep blocks
+  the game thread for a moment (the main menu's Start press, the first robot load).
+- Each new verifier is proven with a deliberately broken rewrite before it is trusted.
 - No generated code or disassembly is committed; the logic is described in words.
 
 **`sub_821C5060`, Bal-Bados' form for the stage** (2026-10-11). Takes a robot number (r3) and
 returns it unchanged unless it is Bal-Bados or one of its forms. For those it returns plain
-Bal-Bados in two situations marked by two game fields (`Game::scene_mode`/`scene_param` at
-+0x240/+0x242: (3, 21), or (0, 31) during the Ending module), otherwise Bal-Baros if the next
-stage is the water stage, Bal-Keros if it is the final stage, else Bal-Bados. When `scene_mode`
-is 0 it also checks the stage stored in a per-side record (`Game::side_records`, 300 bytes each
+Bal-Bados in two situations marked by two game fields (`Game::scene`/`scene_step` at
++0x240/+0x242: (3, 21), the battle's Continue screen, or (0, 31) during the Ending module),
+otherwise Bal-Baros if the next stage is the water stage, Bal-Keros if it is the final stage,
+else Bal-Bados. When the scene is 0 it also checks the stage stored in a per-side record (`Game::side_records`, 300 bytes each
 at +0x96E4, side chosen by the byte at +0x614D). It reads the game pointer and module byte
 through two one-line getters and writes no memory. Verified: 7,765,800 input combinations
 (robots −2…40, every module, stages −2…40, edge values of the two fields, both sides, five side
 stages), 0 mismatches; a deliberately broken rewrite gave 27,138 mismatches, so the check works.
-The verifier saves and restores every byte it changes.
+The verifier saves and restores every byte it changes. Moved onto `Verifier` later: still
+7,765,800 inputs, 0 mismatches; a planted bug gave 11,916.
+
+**`sub_8213CCD0`, the main menu's side choice** (2026-10-11, `menu.cpp`). Called with the side
+(0 = 1P, 1 = 2P). Gives the active controller (`kActiveController`, 0x8289030C, handed out
+when Start is pressed on the title screen; any value above 3 means none) to that side's
+`SideInput::controller` and -1 to the other. With no active controller, side 0 gets pad 0 and
+side 1 pad 1 whatever the choice. Any side other than 0 or 1 leaves both at -1. Then every
+controller except the active one is disabled: `ControllerMasks` (0x829B2268) holds three bit
+masks per controller; disabling clears the bit in all three (the first is "enabled", the
+others aren't known). It calls only memory-touching helpers (sub_82114C88, sub_82114CD0,
+sub_82114A00), so a sweep has no outside effects. Verified: 81,000 inputs (sides incl. the
+32-bit extremes, active values incl. 4 and 0x80000000, both sides' starting pads -1..3, mask
+patterns), 0 mismatches; a planted bug gave 1,125, exactly the inputs it affects. Local
+versus' old hook on this function became `oratan::OnSideChosen`, called after the rewrite or
+the original. Play tested with two pads: rewrite with local versus off, original with local
+versus on (2P).
+
+**`sub_822A6A30`, the module switcher** (2026-10-11, `game_flow.cpp`). Not a dispatch: it takes
+a module file name ("GAME.BIN"), a scene and a step, copies the name into `Game::module_file`
+(+0xCEB0), sets `Game::scene`/`scene_step`, sets two bytes (+0xCEF9 = 1, +0xCEF7 = 0, meaning
+unknown), and looks the name up case-insensitively in `kModuleFileNames` (0x8298AC9C:
+OPEN, GAME, NETVS, CHRSEL, ENDING, CSTM, MTEST) to set the module byte (0xFF if none
+matches). The module itself starts later from the frame loop. Most callers go through
+sub_822A6BA0 (scene 0, step 0). The rewrite also returns the original's r3 (the last name
+comparison). Verified: 720 inputs (the seven names, other spellings and unknown names written
+to spare guest stack, scenes and steps incl. sign edges), 0 mismatches; planted bugs gave 125
+(including 5 writes outside the declared ranges, caught by the section check).
+
+**Game flow: scenes and steps** (2026-10-11). `Game::scene` is the running module's scene, an
+index into that module's scene table (`sub_822AF658` runs one such table); `scene_step` counts
+through it. Logged through Arcade (win, loss, Continue yes, Game Over), Score Attack and
+Training:
+
+| Module | Scene | Steps | What |
+|---|---|---|---|
+| OPEN | 1 | 0..6, 0x11 | title and main menu |
+| CHRSEL | 0 | 4, 5 | Arcade / Score Attack character select |
+| NETVS | 5, 0 | 0..6 | Training select screens |
+| GAME / NETVS | 2 | 9 | one frame before a stage |
+| GAME / NETVS | 3 | 9, 0xA | stage load |
+| | | 0xB | stage intro (~4 s) |
+| | | 0xC..0xE | "ready" (~2 s) |
+| | | 0xF | fighting (pause doesn't change it) |
+| | | 0x10, 0x11 | fight decided |
+| | | 0x12, 0x13 | ~1.5 s later |
+| | | 0x14 | results (~6.5 s); a win goes back to step 9 for the next stage |
+| | | 0x15, 0x16 | Continue screen (yes: CHRSEL) |
+| | | 0x17, 0x18 | Game Over, then OPEN |
+| GAME / NETVS | 2 | 0 | after quitting a fight from the pause menu |
+| NETVS | 4 | 0 | Training's after-fight menu |
+
+Named in `game_memory.h` as `scene_id`, `battle_step` and `IsFightInProgress` (battle module,
+scene 3, step before 0x15). Bytes next to `record_side`: +0x614C is 1 in Arcade / Score Attack
+battles (0 in Training), +0x614E is 1 from a run's first fight and drops at Game Over,
++0x614F counts the stages started in the run.
+
+Split screen now uses `IsFightInProgress`: Continue, Game Over, Training's menus and quits are
+drawn once (with one monitor per player they show the same picture on both monitors, by
+design), and the vblank multiplier follows (logged `Guest vblank multiplier: 1` at Continue).
+Side effect noticed in play: the 2P view now shows the winner's victory pose at the results.
+Still open: the results text is 1P's ("you win/you lose"); a PERFECT by 2P registers (music)
+but its screen doesn't say so.
+
+Next step: recorded input replay, then `sub_822A71B0`. Suggestions for the conventions before
+then: a replay gives real inputs to sweep with, which a `Verifier` input generator could take;
+and functions that call the scene code or the renderer will need the "same call, same
+arguments" dry-run check (not yet written, nothing has needed it).
+
+## 8. Replays
+
+`src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
+plus a per-tick fingerprint of the game state; `--replay_play=FILE` feeds the reads back
+instead of the controllers and reports the first tick where the fingerprint differs
+(`replay: stopped at tick N (...): D drifting ticks, U unmatched reads`). Format and logic are
+described at the top of the file. Paths with spaces need quoting on the command line.
+
+**Results** (2026-10-11):
+
+- **The game is deterministic from boot.** A Training session (6,829 ticks: boot, menus,
+  a fight of about a minute, quit to the title) replays by itself with 0 drifting ticks and 0
+  unmatched reads. The controllers are read exactly once per tick, always on the Update thread.
+  The fingerprints really move (about 7,000 distinct game states in a 9,700-tick session), so
+  a match isn't empty data agreeing.
+- **Display settings don't change gameplay.** The same recording matches with 1440p
+  instead of 1080p, with the native renderer off, and with split screen on (which runs fights
+  at a vblank multiplier of 2). Replays work as a gameplay regression test.
+- **Heap pointers in the robot records.** The first native-renderer-off replay "drifted" from
+  the round start on, but only six words differed: `Robot` +0xB4, +0xC8, +0x2D8 in both
+  robots, each exactly 0xC1A0 higher, still the only difference mid-fight. They are guest heap
+  pointers (allocation placement differs with the renderer; gameplay doesn't). Named
+  `heap_pointer_*` in `game_memory.h` and zeroed before hashing; file format version 2.
+- **Boot waits on vblanks.** `--guest_vblank_multiplier=4` replays 2.5x faster but drifts from
+  tick 1025: part of the boot sequence waits a number of vblanks, so it finishes in fewer ticks
+  and every later input lands on the wrong tick. Not worked around: fast replays, and
+  netplay, would want to start from a known point (fight start) instead of boot, or record the
+  ticks the boot took. Fights themselves aren't affected (split screen's 2x matches).
+- **Closing the window hard-exits** (`ReXApp::OnClosing` calls `_Exit`), so the end record is
+  never written. Recording now flushes every tick, and a replay treats the end of the file as
+  the end of the recording.
 
 ---
 
