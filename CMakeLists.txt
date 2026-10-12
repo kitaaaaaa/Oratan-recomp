@@ -26,6 +26,8 @@ set(ORATAN_SOURCES
     src/select_pages.cpp
     src/replay.cpp
     src/decomp/decomp.cpp
+    src/decomp/game_flow.cpp
+    src/decomp/menu.cpp
     src/decomp/robot_loader.cpp
 )
 

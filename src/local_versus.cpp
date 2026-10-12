@@ -2,9 +2,10 @@
 //
 // Input: each side has an input record (game::SideInput; side 0 = 1P/DNA,
 // side 1 = 2P/RNA) naming the controller it reads. Choosing a side in the
-// main menu (sub_8213CCD0) gives that side the active controller and sets the
-// other side to -1, so a second controller is ignored. With local_versus on,
-// the other side keeps the second controller.
+// main menu (sub_8213CCD0, src/decomp/menu.cpp) gives that side the active
+// controller and sets the other side to -1, so a second controller is ignored.
+// With local_versus on, the other side keeps the second controller
+// (OnSideChosen, called from that hook).
 //
 // Control: every frame sub_822A71B0 turns both sides' controller state into
 // robot command words, but a robot whose cpu_controlled byte is 1 ignores
@@ -19,6 +20,7 @@
 
 #include "dual_monitor.h"
 #include "game_memory.h"
+#include "local_versus.h"
 
 #include <cstdint>
 #include <string>
@@ -47,7 +49,6 @@ REXCVAR_DEFINE_BOOL(split_swap_sides, false, "Oratan",
                     "Split screen: put robot 1's view on the right (bottom-right when "
                     "staggered, the right monitor with one monitor per player)");
 
-REX_EXTERN(__imp__sub_8213CCD0);
 REX_EXTERN(__imp__sub_82123758);
 REX_EXTERN(__imp__sub_822A71B0);
 
@@ -65,10 +66,7 @@ bool InBattle(uint8_t* base) {
 
 }  // namespace
 
-// sub_8213CCD0(side): assigns the active controller to `side`.
-REX_HOOK_RAW(sub_8213CCD0) {
-  const uint32_t side = ctx.r3.u32;
-  __imp__sub_8213CCD0(ctx, base);
+void oratan::OnSideChosen(uint8_t* base, uint32_t side) {
   if (!REXCVAR_GET(local_versus) || side > 1) return;
 
   game::SideInput* inputs = game::GetSideInputs(base);
@@ -132,7 +130,10 @@ REX_HOOK_RAW(sub_822A71B0) {
 REX_HOOK_RAW(sub_82123758) {
   game::Game* g = game::GetGame(base);
   const game::Module module = game::CurrentModule(base);
-  const bool active = REXCVAR_GET(split_screen) && g && game::IsBattleModule(module);
+  // Only while a stage is under way: Arcade's Continue and Game Over screens
+  // also run in the battle module but are drawn once, full screen.
+  const bool fighting = g && game::IsFightInProgress(*g, module);
+  const bool active = REXCVAR_GET(split_screen) && fighting;
   // Layout for the GPU side to compose with (runtime state, cheap to refresh).
   const int32_t display = REXCVAR_GET(split_display);
   rex::system::split_screen::SetLayout(display == 0 ? rex::system::split_screen::Layout::kStaggered
@@ -143,11 +144,12 @@ REX_HOOK_RAW(sub_82123758) {
   rex::system::split_screen::SetMirrorUntagged(REXCVAR_GET(split_screen) &&
                                                oratan::DualMonitorActive());
   static int last_state = -1;
-  const int state = (REXCVAR_GET(split_screen) ? 4 : 0) | (g ? 2 : 0) |
-                    (game::IsBattleModule(module) ? 1 : 0);
+  const int state = (REXCVAR_GET(split_screen) ? 8 : 0) | (g ? 4 : 0) |
+                    (game::IsBattleModule(module) ? 2 : 0) | (fighting ? 1 : 0);
   if (state != last_state) {
-    REXLOG_INFO("split_screen: enabled={} game={:08X} module={} -> {}", REXCVAR_GET(split_screen),
-                game::LoadGuestAddress(base, game::kGamePointer), int(module),
+    REXLOG_INFO("split_screen: enabled={} game={:08X} module={} scene={} step={:#x} -> {}",
+                REXCVAR_GET(split_screen), game::LoadGuestAddress(base, game::kGamePointer),
+                int(module), g ? int(g->scene) : -1, g ? int(g->scene_step) : -1,
                 active ? "split" : "normal");
     last_state = state;
     // The game waits for one vertical blank per presented frame; drawing every

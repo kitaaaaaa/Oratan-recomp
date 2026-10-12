@@ -25,12 +25,21 @@ using rex::be;
 
 // u32 guest pointer to the battle state (Game), 0 outside battles.
 inline constexpr uint32_t kGamePointer = 0x839EEA98;
-// u8: the running module (Module).
+// u8: the running module (Module), 0xFF if the switcher didn't know the name.
 inline constexpr uint32_t kModuleIndex = 0x839C21BC;
+// be<uint32_t>[]: guest pointers to the module file names ("OPEN.BIN" ...),
+// in Module order, ending with 0. The switcher looks names up here.
+inline constexpr uint32_t kModuleFileNames = 0x8298AC9C;
 // SideInput[2]: each side's input record.
 inline constexpr uint32_t kSideInputs = 0x829BEFA8;
 // ControllerState[4]: controllers as read by sub_821135C0.
 inline constexpr uint32_t kControllerStates = 0x829BF2A8;
+// be<uint32_t>: the active controller, 0-3; any other value means none
+// (sub_82114C88 reads it as -1). Set when the title screen hands out
+// controllers; sub_8213CCD0 gives it to the side chosen in the main menu.
+inline constexpr uint32_t kActiveController = 0x8289030C;
+// ControllerMasks: per-controller bit masks (bit n = controller n).
+inline constexpr uint32_t kControllerMasks = 0x829B2268;
 // be<int32_t>: stage number of the next fight (the Training stage select stores it here).
 inline constexpr uint32_t kNextStage = 0x83876DF4;
 // be<uint32_t>[22]: guest pointers to stage file names (stage -> "carrier", "duct", ...).
@@ -58,7 +67,8 @@ inline constexpr uint32_t kDrawListCount = 0x839EFB7C;
 
 // --- Enumerations -----------------------------------------------------------
 
-// The byte at kModuleIndex (switcher: sub_822A6A30).
+// The byte at kModuleIndex. The switcher (sub_822A6A30, src/decomp/game_flow.cpp)
+// takes the module's file name ("GAME.BIN") and the scene and step to start in.
 enum class Module : uint8_t {
   kOpen = 0,       // title, main menu, attract demo
   kGame = 1,       // Arcade and Score Attack battles, Continue, Game Over
@@ -75,6 +85,33 @@ enum class CameraView : uint8_t {
   kRobot2 = 1,       // GAME CAMERA RNA (side 2)
   kLiveMonitor = 2,  // LIVE MONITOR (observer camera)
 };
+
+// Game::scene: the scene of the running module, an index into the module's
+// scene table (each module runs its own; Game::scene_step counts through the
+// scene). Values seen in the logs (notes/DEV_DIARY.md section 7):
+namespace scene_id {
+inline constexpr int16_t kMenu = 1;         // OPEN: title and main menu
+inline constexpr int16_t kCharSelect = 0;   // CHRSEL: Arcade character select
+inline constexpr int16_t kBattleEnter = 2;  // GAME / NETVS: step 9 for one frame before
+                                            // kBattle; step 0 after quitting a fight
+inline constexpr int16_t kBattle = 3;       // GAME / NETVS: a stage, from loading to
+                                            // Continue / Game Over (see battle_step)
+inline constexpr int16_t kTrainingMenu = 5;  // NETVS: Training's select screens (also 0 on entry)
+inline constexpr int16_t kTrainingAfterFight = 4;  // NETVS: Training's after-fight menu
+}  // namespace scene_id
+
+// Game::scene_step during scene_id::kBattle. Each value lasts until the next.
+namespace battle_step {
+inline constexpr uint16_t kLoad = 0x09;         // stage load; 0x0A follows next frame
+inline constexpr uint16_t kIntro = 0x0B;        // stage intro (~4 s)
+inline constexpr uint16_t kRoundStart = 0x0C;   // "ready" (0x0D, 0x0E follow, ~2 s)
+inline constexpr uint16_t kFight = 0x0F;        // fighting (pause doesn't change it)
+inline constexpr uint16_t kDecided = 0x10;      // fight won or lost (0x11 next frame)
+inline constexpr uint16_t kAftermath = 0x12;    // ~1.5 s later (0x13 next frame)
+inline constexpr uint16_t kResults = 0x14;      // ~6.5 s; a win goes back to kLoad
+inline constexpr uint16_t kContinue = 0x15;     // Arcade Continue screen (0x16 next frame)
+inline constexpr uint16_t kGameOver = 0x17;     // Game Over (0x18 next frame), then OPEN
+}  // namespace battle_step
 
 // Robot numbers confirmed so far (Robot::robot_id, kRobotFileNames index, roster
 // bytes). 0 is "dor" and 18 the last entry; the rest are not yet matched to names.
@@ -128,7 +165,17 @@ struct Robot {
   be<uint16_t> facing;  // the upper half of the word at +0x74; 65536 per turn
   uint8_t unk_0076[0x84 - 0x76];
   BeVec3 position;
-  uint8_t unk_0090[0x4B8 - 0x90];
+  uint8_t unk_0090[0xB4 - 0x90];
+  // Guest heap pointers (targets not yet known). Their values depend on where
+  // the allocator placed things, which can differ between sessions with the
+  // same gameplay (seen: all three 0xC1A0 higher with the native renderer
+  // off), so replays leave them out of the state fingerprint.
+  be<uint32_t> heap_pointer_0B4;
+  uint8_t unk_00B8[0xC8 - 0xB8];
+  be<uint32_t> heap_pointer_0C8;
+  uint8_t unk_00CC[0x2D8 - 0xCC];
+  be<uint32_t> heap_pointer_2D8;  // heap_pointer_0C8 + 0x10 when seen
+  uint8_t unk_02DC[0x4B8 - 0x2DC];
   // Bone table: Bone entries from here; the count per robot isn't known yet.
   uint8_t bone_table[0x1190 - 0x4B8];
 
@@ -139,6 +186,9 @@ static_assert(sizeof(Robot) == 4496);
 static_assert(offsetof(Robot, cpu_controlled) == 0x6D);
 static_assert(offsetof(Robot, facing) == 0x74);
 static_assert(offsetof(Robot, position) == 0x84);
+static_assert(offsetof(Robot, heap_pointer_0B4) == 0xB4);
+static_assert(offsetof(Robot, heap_pointer_0C8) == 0xC8);
+static_assert(offsetof(Robot, heap_pointer_2D8) == 0x2D8);
 static_assert(offsetof(Robot, bone_table) == 0x4B8);
 
 // The battle state, at *kGamePointer. Only the start is laid out; the full
@@ -153,24 +203,36 @@ static_assert(sizeof(GameSideRecord) == 300);
 struct Game {
   be<float> camera[16];  // 4x4 matrix the frame is drawn with
   uint8_t unk_0040[0x240 - 0x40];
-  // Two values whose meaning isn't known yet. sub_821C5060 keeps plain Bal-Bados
-  // when they are (3, 21), or (0, 31) in the Ending module, and reads the
-  // side record's stage only when scene_mode is 0.
-  be<uint16_t> scene_mode;   // +0x240
-  be<uint16_t> scene_param;  // +0x242
-  // Not yet typed: game+0x614C (24908) stays 1 through Arcade's Continue
-  // screen; game+0x614E (24910) only drops at Game Over.
+  // The running module's scene (scene_id) and the step within it
+  // (battle_step for scene_id::kBattle). Set by the module switcher and by
+  // each module's scene code.
+  be<int16_t> scene;        // +0x240
+  be<uint16_t> scene_step;  // +0x242
+  // Not yet typed: game+0x614C (24908) is 1 in Arcade and Score Attack
+  // battles (0 in Training); game+0x614E (24910) is 1 from a run's first
+  // fight and drops at Game Over (battle_step::kGameOver + 1); game+0x614F
+  // counts the stages started in the run (a continue counts again).
   uint8_t unk_0244[0x614D - 0x244];
   int8_t record_side;  // +0x614D: which side_records entry sub_821C5060 reads
   uint8_t unk_614E[0x6150 - 0x614E];
   Robot robots[2];  // side 1 (DNA), side 2 (RNA)
   uint8_t unk_8470[0x96E4 - 0x8470];
   GameSideRecord side_records[2];  // +0x96E4
-  uint8_t unk_993C[0xCF85 - 0x993C];
+  uint8_t unk_993C[0xCEB0 - 0x993C];
+  // The running module's file name ("GAME.BIN"), copied by the switcher. The
+  // buffer's real size isn't known; this is the gap to the next known field.
+  char module_file[0xCEF7 - 0xCEB0];
+  uint8_t module_switch_cleared;  // +0xCEF7: the switcher sets it to 0; meaning unknown
+  uint8_t unk_CEF8;
+  uint8_t module_switch_set;      // +0xCEF9: the switcher sets it to 1; meaning unknown
+  uint8_t unk_CEFA[0xCF85 - 0xCEFA];
   CameraView camera_view;  // which view Draw renders (split screen sets it per view)
 };
-static_assert(offsetof(Game, scene_mode) == 0x240);
-static_assert(offsetof(Game, scene_param) == 0x242);
+static_assert(offsetof(Game, scene) == 0x240);
+static_assert(offsetof(Game, scene_step) == 0x242);
+static_assert(offsetof(Game, module_file) == 0xCEB0);
+static_assert(offsetof(Game, module_switch_cleared) == 52983);
+static_assert(offsetof(Game, module_switch_set) == 52985);
 static_assert(offsetof(Game, record_side) == 24909);
 static_assert(offsetof(Game, side_records) == 38628);
 static_assert(offsetof(Game, robots) == 0x6150);
@@ -188,6 +250,16 @@ struct SideInput {
 };
 static_assert(sizeof(SideInput) == 316);
 static_assert(offsetof(SideInput, controller) == 300);
+
+// Per-controller bit masks at kControllerMasks (bit n = controller n).
+// sub_82114A00(pad, on) sets or clears pad's bit in `enabled` and always clears
+// it in the other two, whose meaning isn't known yet.
+struct ControllerMasks {
+  be<uint32_t> enabled;
+  be<uint32_t> unk_mask_4;
+  be<uint32_t> unk_mask_8;
+};
+static_assert(sizeof(ControllerMasks) == 12);
 
 // One controller's state (kControllerStates). 60 bytes, not yet mapped.
 struct ControllerState {
@@ -256,6 +328,18 @@ inline bool IsBattleModule(Module module) {
   return module == Module::kGame || module == Module::kNetVs;
 }
 
+// A stage is under way: from its load and intro through the fight to the
+// results, but not Arcade's Continue and Game Over screens (which run in the
+// battle module too), the Training select screens, or a quit to the menu.
+inline bool IsFightInProgress(const Game& g, Module module) {
+  return IsBattleModule(module) && g.scene == scene_id::kBattle &&
+         g.scene_step < battle_step::kContinue;
+}
+
 inline SideInput* GetSideInputs(uint8_t* base) { return GuestPtr<SideInput>(base, kSideInputs); }
+
+inline ControllerMasks* GetControllerMasks(uint8_t* base) {
+  return GuestPtr<ControllerMasks>(base, kControllerMasks);
+}
 
 }  // namespace oratan::game
