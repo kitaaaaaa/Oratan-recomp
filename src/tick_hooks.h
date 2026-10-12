@@ -30,6 +30,9 @@ namespace netplay {
 // Called once, from whichever hook runs first; connects to the other player
 // (blocking) when netplay is set up.
 void Start(uint8_t* base, bool replay_playing);
+// Before the game reads the controllers: gives the read this machine's own
+// controller history back (the read computes presses from it).
+void BeforeControllerRead(uint8_t* base);
 // After the game read the controllers: replaces them with both players'
 // inputs for this tick, waiting for the other player's if needed.
 void OnControllerRead(uint8_t* base);

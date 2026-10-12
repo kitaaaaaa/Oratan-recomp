@@ -1,0 +1,16 @@
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..2e667a1 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -88,6 +88,11 @@ void SDLInputDriver::OnWindowAvailable(rex::ui::Window* window) {
+           },
+           this);
+ 
++      // Read controllers while the window isn't focused too (SDL drops their
++      // events in the background by default): two copies of a game on one PC,
++      // one controller each, both need input.
++      SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
++
+       // Initialize game controller subsystem
+       if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+         REXLOG_ERROR("SDL: Failed to init gamecontroller subsystem: {}", SDL_GetError());

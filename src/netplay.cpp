@@ -317,6 +317,10 @@ std::atomic<int32_t> g_local_slot{-1};
 
 struct Session {
   Mode mode = Mode::kOff;
+  // This machine's controller buffer as its own last read left it (see
+  // BeforeControllerRead).
+  std::array<uint8_t, kSlotBytes * kSlots> own_states{};
+  bool have_own_states = false;
   bool host = false;
   uint32_t delay = 3;
   uint32_t my_slot = 0;
@@ -579,10 +583,23 @@ struct Session {
     }
   }
 
+  // The read (sub_821135C0) keeps each controller's history in the buffer:
+  // "just pressed" (+12) = held (+4) and not held at the previous read (+8),
+  // and the last XInput packet number (+28). After a read the buffer holds the
+  // shared, delayed input, so the next read would compare this machine's
+  // controller against that and report one press on several ticks. Before
+  // each read, the buffer gets back what this machine's own previous read left.
+  void BeforeControllerRead(uint8_t* base) {
+    if (mode != Mode::kRunning || !have_own_states) return;
+    std::memcpy(base + game::kControllerStates, own_states.data(), own_states.size());
+  }
+
   void OnControllerRead(uint8_t* base) {
     if (mode != Mode::kRunning) return;
     const uint32_t tick = oratan::GameTick();
     uint8_t* states = base + game::kControllerStates;
+    std::memcpy(own_states.data(), states, own_states.size());
+    have_own_states = true;
 
     // This player's input, scheduled `delay` ticks ahead (sampled once per tick).
     if (tick >= 1) {
@@ -659,6 +676,8 @@ int32_t NetplayLocalSlot() { return g_local_slot; }
 namespace netplay {
 
 void Start(uint8_t* base, bool replay_playing) { g_session.Start(base, replay_playing); }
+
+void BeforeControllerRead(uint8_t* base) { g_session.BeforeControllerRead(base); }
 
 void OnControllerRead(uint8_t* base) { g_session.OnControllerRead(base); }
 

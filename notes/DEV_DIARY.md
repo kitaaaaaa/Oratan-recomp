@@ -443,6 +443,48 @@ described at the top of the file. Paths with spaces need quoting on the command 
   never written. Recording now flushes every tick, and a replay treats the end of the file as
   the end of the recording.
 
+## 9. Netplay
+
+`src/netplay.cpp` (experimental, command line only): lockstep versus over UDP, built as a live
+replay. Each machine sends its own controller's buffer every tick, `netplay_delay` ticks ahead;
+both write the same merged buffer (host slot 0, joiner slot 1) and exchange state fingerprints.
+`--netplay_host=PORT`, `--netplay_join=ADDRESS:PORT`, `--netplay_pad=N`, `--netplay_delay=N`,
+`--netplay_timeout=MS`, `--netplay_sim_latency=MS`, `--netplay_sim_loss=PCT`. The Update and
+controller-read hooks are in `tick_hooks.cpp` (netplay, then replay), the fingerprint in
+`state_hash.cpp`.
+
+**Results** (2026-10-12, two copies on one PC, two controllers):
+
+- **Replays still match** after the refactor (6,829 ticks, 0 drifts), and **live input doesn't
+  leak in**: a replay played while mashing the real controller still matched. The game sees the
+  controllers only through `kControllerStates`.
+- **Fixed: one press counted up to 4 times.** The read (`sub_821135C0`) keeps each controller's
+  history in that buffer: "just pressed" (+12) = held (+4) and not held at the previous read
+  (+8), and it skips unchanged XInput packets by the number at +28. After netplay put the
+  shared, delayed input there, the next read compared the local controller against input
+  `delay + 1` ticks old, so a press was "new" on several ticks (the menus moved 2-4 steps).
+  Netplay now gives the read this machine's own buffer back before each read
+  (`BeforeControllerRead`). Replays never hit this: a recording overwrites the buffer with its
+  own consistent history.
+- **Fixed: the unfocused window got no controller input** (SDL drops pad events in the
+  background by default). SDK patch 0006 turns background pad input on, always (the owner's
+  choice).
+- **In sync throughout:** 12,345 ticks of menus, Training and Arcade with every fingerprint
+  compared, no desync.
+- **Simulated internet** (40 ms each way, 2% loss): in sync at every delay, and felt smooth at
+  3. Stalls per 30 s: delay 3, host 9-47 and joiner 451-1,577 (still 60 ticks/s; waits fit in
+  frame time); delay 4, joiner 0 but a host burst of 1,731; delay 5, host 34-52, joiner 0. The
+  waits fall on whichever machine runs ahead. 4-5 suits a ~40 ms connection.
+- **Disconnects:** closing one copy, in the menus or mid-fight, makes the other wait
+  `netplay_timeout` (10 s), log "the other player stopped answering; continuing offline", and
+  carry on; mid-fight the opponent's robot goes back to the CPU.
+- Not tested yet: two PCs (LAN or internet).
+
+**Asked for next** (owner, 2026-10-12): with local versus or netplay, player 2 should get their
+own VR select (Training, Arcade, Score Attack) instead of a copy of player 1's, and Training's
+select cursor should say "PLAYER 2" instead of "AI". An F1 Netplay panel would replace the
+command line. Later: VR headset support and a first-person view.
+
 ---
 
 *Working notes with every detail and the full history: `work\DIARY.md`. Model formats and

@@ -59,6 +59,7 @@ REX_HOOK_RAW(sub_821236E0) {
 // sub_821135C0: reads the controllers into game::kControllerStates.
 REX_HOOK_RAW(sub_821135C0) {
   StartFeatures(base);
+  oratan::netplay::BeforeControllerRead(base);
   __imp__sub_821135C0(ctx, base);
   oratan::netplay::OnControllerRead(base);
   oratan::replay::OnControllerRead(base);

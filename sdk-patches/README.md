@@ -10,6 +10,7 @@ before building it from source. The release zip ships the patched runtime DLLs.
 | `0003-achievements-ui.patch` | Achievements from the main menu no longer softlock: `XamShowAchievementsUI` (a stub) now reports the system UI as opened and closed right away, so the title stops waiting for a screen that does not exist. |
 | `0004-native-render-targets.patch` | Native render targets (`native_render_targets`, `native_resolution`, `native_msaa`): resolves become host copies into native textures instead of EDRAM emulation, so the game renders at exactly 1920×1080, 2560×1440 or 3840×2160. Per-render-target scale, native resolve shaders, texture binding of resolve outputs, scaled viewports. See `notes/RENDERER_DESIGN.md`. |
 | `0005-native-lighting.patch` | Native lighting (needs 0004): sharp shadow mapping from the game's own per-robot shadow pass (`native_shadows`, `native_shadow_strength`, PCF), screen-space ambient occlusion (`native_ao_strength`, `native_ao_radius`), and a stencil robot mask so robots skip their own light map unless `native_self_shadow` is on. `native_shadow_debug` shows the shadow factor, AO or robot mask. See `notes/RENDERER_DESIGN.md`. |
+| `0006-background-pads.patch` | Controllers keep working while the window isn't focused (SDL's `SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS`): two copies of the game on one PC, one controller each, both get input (netplay testing). |
 
 To build the patched SDK:
 
