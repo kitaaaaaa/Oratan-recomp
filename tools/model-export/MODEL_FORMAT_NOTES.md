@@ -61,3 +61,22 @@ Scripts: farc.py, mrg.py, pvr.py, png4.py, drawlist.py, locate2.py, feiexport.py
   Customize capture, z negated (left->right handed), rotated to face +Z (sabre hand = her LEFT),
   feet at y=0. Verified by reading the .glb back and posing it (glbcheck.py).
 - Scripts: poses.py, skeleton.py, tree.py, rigexport.py, glbcheck.py; data rigdata.pkl, tree.pkl.
+
+## Rig v2: swapped-in parts (2026-10-18)
+In battle the game swaps meshes in and out instead of animating them; v1 only used the 36 meshes
+drawn on the Customize screen. fei1c object indices:
+- tail boosters: closed 24-27 -> articulated 89-97 / 107-115 (dash);
+- V-converter: closed box 49 (+ Dreamcast lid face 54) -> open 55-59: 59 stays, door 58 swings,
+  55/56 = green inner faces, 57 = V-disk quad (slides). 49 = both door halves stacked, so the
+  door hinge is solved exactly (108.9 deg). The game draws 54 unchanged on the open door, one
+  door-thickness off it; the export moves the open copy flush.
+- right hand: closed 43 -> open 72-88 (palm 72, thumb 73-75, fingers 77/78/79, pinky tip 82,
+  76 = unidentified plate). Identical finger pieces keep their draw order across captures.
+Rigidity is only tested on captures where both parts are drawn, so tree2.py reports any bone
+whose members move apart. Joint pivots from the open-set motion; near-rigid pairs (pivot not
+pinned down) get the point where the parts touch.
+Pipeline (F9 captures in caps\ and caps2\):
+1. `python rigdata2.py` -> rigdata2.pkl;  2. `python tree2.py` -> tree2.pkl (prints the tree);
+3. `python rigexport2.py out.glb [closed|open]` (no variant: one skeleton, a mesh per swappable
+   piece); `python apose2.py <v1_rigged.glb> <v1_apose.glb> out.glb [closed|open]` reuses the
+   approved v1 A-pose per bone; new bones follow hand_R / booster_L/R / their parent.
