@@ -22,6 +22,9 @@
 //
 // Settings: --netplay_host=PORT (player 1) or --netplay_join=ADDRESS:PORT
 // (player 2), --netplay_delay=TICKS (host's value is used), --netplay_pad=N.
+// The Options window (F1) sets these up: it restarts the game with
+// --netplay_host / --netplay_join (never saved, so a normal launch is offline)
+// and remembers netplay_port, netplay_address, netplay_delay and netplay_pad.
 // The host's UDP port must be reachable (port forwarding, or a VPN such as
 // ZeroTier or Tailscale). IPv4 only for now.
 
@@ -53,12 +56,14 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <mutex>
 #include <random>
 #include <string>
 #include <vector>
@@ -75,6 +80,11 @@ REXCVAR_DEFINE_INT32(netplay_delay, 3, "Oratan/Netplay",
 REXCVAR_DEFINE_INT32(netplay_pad, 0, "Oratan/Netplay",
                      "Which local controller (0-3) this machine's player uses in netplay")
     .range(0, 3);
+REXCVAR_DEFINE_INT32(netplay_port, 7000, "Oratan/Netplay",
+                     "Netplay: the UDP port the Options window hosts on (remembered)")
+    .range(1024, 65535);
+REXCVAR_DEFINE_STRING(netplay_address, "", "Oratan/Netplay",
+                      "Netplay: the host address the Options window last joined (remembered)");
 REXCVAR_DEFINE_INT32(netplay_timeout, 10000, "Oratan/Netplay",
                      "Netplay: give up after this many milliseconds without hearing from the "
                      "other player, and continue offline")
@@ -126,6 +136,19 @@ constexpr SocketHandle kNoSocket = -1;
 void CloseSocket(SocketHandle s) { close(s); }
 #endif
 
+// Winsock needs starting once per process (nothing to do elsewhere).
+bool EnsureSockets() {
+#ifdef _WIN32
+  static const bool started = [] {
+    WSADATA data;
+    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+  }();
+  return started;
+#else
+  return true;
+#endif
+}
+
 struct Endpoint {
   sockaddr_in addr{};
   bool operator==(const Endpoint& o) const {
@@ -145,13 +168,7 @@ class Udp {
   ~Udp() { Close(); }
 
   bool Open(uint16_t port) {
-#ifdef _WIN32
-    static bool wsa = [] {
-      WSADATA data;
-      return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-    }();
-    if (!wsa) return false;
-#endif
+    if (!EnsureSockets()) return false;
     socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_ == kNoSocket) return false;
     sockaddr_in local{};
@@ -314,6 +331,25 @@ enum class Mode { kOff, kRunning, kEnded };
 
 std::atomic<bool> g_active{false};
 std::atomic<int32_t> g_local_slot{-1};
+std::atomic<bool> g_cancel{false};
+
+// What the Options window shows; written by the game thread.
+std::mutex g_status_mutex;
+oratan::NetplayStatus g_status;
+
+template <typename F>
+void UpdateStatus(F&& change) {
+  std::lock_guard lock(g_status_mutex);
+  change(g_status);
+}
+
+// Logs why netplay didn't start or stopped, and shows it in the Options window.
+void Stopped(const std::string& message) {
+  UpdateStatus([&](oratan::NetplayStatus& s) {
+    s.state = oratan::NetplayStatus::State::kEnded;
+    s.message = message;
+  });
+}
 
 struct Session {
   Mode mode = Mode::kOff;
@@ -373,8 +409,17 @@ struct Session {
     }
     host = host_port != 0;
     if (host && !join.empty()) REXLOG_WARN("netplay: both netplay_host and netplay_join set; hosting");
+    UpdateStatus([&](oratan::NetplayStatus& s) {
+      s.state = host ? oratan::NetplayStatus::State::kWaiting
+                     : oratan::NetplayStatus::State::kJoining;
+      s.host = host;
+      s.port = host ? uint32_t(host_port) : 0;
+      s.peer = host ? std::string() : join;
+    });
     if (!udp.Open(host ? uint16_t(host_port) : 0)) {
       REXLOG_ERROR("netplay: cannot open UDP port {}", host ? host_port : 0);
+      Stopped("Couldn't open UDP port " + std::to_string(host ? host_port : 0) +
+              " (in use by another program?)");
       return;
     }
     game_hash = Fnv(base + kImageStart, kImageEnd - kImageStart);
@@ -389,6 +434,13 @@ struct Session {
     mode = Mode::kRunning;
     g_local_slot = int32_t(my_slot);
     g_active = true;
+    UpdateStatus([&](oratan::NetplayStatus& s) {
+      s.state = oratan::NetplayStatus::State::kConnected;
+      s.peer = peer.ToString();
+      s.player = my_slot + 1;
+      s.delay = delay;
+      s.message.clear();
+    });
     REXLOG_INFO("netplay: connected to {} as player {}, input delay {} ticks", peer.ToString(),
                 my_slot + 1, delay);
   }
@@ -400,6 +452,11 @@ struct Session {
     std::vector<uint8_t> packet;
     Endpoint from;
     for (;;) {
+      if (g_cancel) {
+        REXLOG_INFO("netplay: stopped waiting for player 2; playing offline");
+        Stopped("Stopped waiting for player 2.");
+        return false;
+      }
       udp.Wait(100);
       while (udp.Receive(&packet, &from)) {
         Reader in(packet);
@@ -415,6 +472,9 @@ struct Session {
         udp.Flush();
         if (!same_game) {
           REXLOG_ERROR("netplay: {} has different game files; refused", from.ToString());
+          UpdateStatus([&](oratan::NetplayStatus& s) {
+            s.message = from.ToString() + " tried to join with different game files.";
+          });
           continue;
         }
         peer = from;
@@ -430,6 +490,7 @@ struct Session {
   bool JoinHost(const std::string& host_port) {
     if (!Udp::Resolve(host_port, &peer)) {
       REXLOG_ERROR("netplay: cannot resolve {} (expected ADDRESS:PORT)", host_port);
+      Stopped("Couldn't find " + host_port + " (expected ADDRESS:PORT).");
       return false;
     }
     REXLOG_INFO("netplay: joining {}", peer.ToString());
@@ -437,6 +498,11 @@ struct Session {
     std::vector<uint8_t> packet;
     Endpoint from;
     while (Clock::now() < give_up) {
+      if (g_cancel) {
+        REXLOG_INFO("netplay: stopped joining; playing offline");
+        Stopped("Stopped joining.");
+        return false;
+      }
       Writer hello(kHello);
       hello.U64(game_hash);
       udp.Send(peer, hello.bytes());
@@ -454,6 +520,7 @@ struct Session {
         }
         if (!accepted) {
           REXLOG_ERROR("netplay: the host has different game files; not connected");
+          Stopped("The host has different game files.");
           return false;
         }
         delay = host_delay;
@@ -461,6 +528,8 @@ struct Session {
       }
     }
     REXLOG_ERROR("netplay: no answer from {} after 30 s; playing offline", peer.ToString());
+    Stopped("No answer from " + peer.ToString() +
+            " after 30 s. Is the host waiting, and is the port reachable?");
     return false;
   }
 
@@ -471,6 +540,7 @@ struct Session {
     mode = Mode::kEnded;
     g_active = false;
     g_local_slot = -1;
+    Stopped(why);
     REXLOG_INFO(
         "netplay: ended at tick {} ({}): {} fingerprints compared, {}, {} stalls ({:.0f} ms)",
         oratan::GameTick(), why, compared,
@@ -487,6 +557,10 @@ struct Session {
     REXLOG_INFO("netplay: ticks {}-{}: {} stalls ({:.0f} ms waiting), {} fingerprints compared, {}",
                 report_tick, tick, stalls - report_stalls, stall_ms - report_stall_ms, compared,
                 desynced ? "desynced" : "in sync");
+    UpdateStatus([&](oratan::NetplayStatus& s) {
+      s.recent_stalls = stalls - report_stalls;
+      s.recent_stall_ms = stall_ms - report_stall_ms;
+    });
     report_time = now;
     report_tick = tick;
     report_stalls = stalls;
@@ -574,6 +648,10 @@ struct Session {
     if (own.hashes == theirs.hashes || desynced) return;
     desynced = true;
     desync_tick = tick;
+    UpdateStatus([&](oratan::NetplayStatus& s) {
+      s.desynced = true;
+      s.desync_tick = tick;
+    });
     REXLOG_ERROR("netplay: desync after tick {}: {} differ", tick,
                  oratan::DifferingRegions(own.hashes, theirs.hashes));
     const DumpEntry& dump = dumps[tick % kDumpRing];
@@ -672,6 +750,35 @@ namespace oratan {
 bool NetplayActive() { return g_active; }
 
 int32_t NetplayLocalSlot() { return g_local_slot; }
+
+NetplayStatus GetNetplayStatus() {
+  std::lock_guard lock(g_status_mutex);
+  return g_status;
+}
+
+void CancelNetplayWait() { g_cancel = true; }
+
+std::vector<std::string> LocalIpv4Addresses() {
+  std::vector<std::string> addresses;
+  if (!EnsureSockets()) return addresses;
+  char name[256] = {};
+  if (gethostname(name, sizeof(name)) != 0) return addresses;
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  addrinfo* result = nullptr;
+  if (getaddrinfo(name, nullptr, &hints, &result) != 0) return addresses;
+  for (addrinfo* a = result; a; a = a->ai_next) {
+    const auto* in = reinterpret_cast<const sockaddr_in*>(a->ai_addr);
+    if ((ntohl(in->sin_addr.s_addr) >> 24) == 127) continue;  // loopback
+    char text[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &in->sin_addr, text, sizeof(text));
+    if (std::find(addresses.begin(), addresses.end(), text) == addresses.end()) {
+      addresses.push_back(text);
+    }
+  }
+  freeaddrinfo(result);
+  return addresses;
+}
 
 namespace netplay {
 
