@@ -205,6 +205,30 @@ lower-detail or hyper-mode versions of each).
 
 The full export pipeline and scripts are in `work\MODEL_FORMAT_NOTES.md`.
 
+### 4.4 How the robots animate (2026-10-24)
+
+Fei-Yen's animations were extracted exactly and turned into game-accurate clips for a VRChat
+avatar. Full format, runtime facts, the tracing tool and the pipeline are in
+`tools/model-export/ANIMATION_FORMAT_NOTES.md`; in short:
+
+- **`XXX.mt`** is a table of **animation blocks**: table A at 0x10 (629 offsets), table B at 0x9E4
+  (340 more). A block holds one array of channels (about 70 for Fei-Yen); a channel is a constant
+  or a **cubic Hermite curve** of keys (u16 time in 1/60 s, bfloat16 value with the sign in bit 0,
+  tangents). The curve evaluator is fully decoded. Indices share blocks in a repeating pattern of
+  three (452 distinct blocks for 629 indices), played at different speeds and directions.
+- **Not decoded:** which channel drives which joint and in what order, and the leg IK. So the
+  exact route reads the game's *output* instead of re-deriving it.
+- **Each tick**, `sub_82240808` reads one word of table A: the file offset read is
+  `0x10 + 4 * animation index`. Logging those reads says which animation plays when; logging the
+  draw list (4.3) gives every part's exact world matrix. `tools/dev-instrumentation/motion-trace/`
+  is the instrumented build (macro-level load/store logging in the generated code, per-tick hook).
+- **Result:** 39 animations recorded in one session, 13,686 ticks; per bone the rotation is the
+  part's world matrix against its rest matrix, converted to the rig's frame. The robot's facing is
+  its **head**, not its pelvis (the idle is an angled stance with the head dead on target).
+- A Humanoid avatar cannot hold the game's joints exactly (3-axis shoulder, hinge elbows and
+  knees); a hidden correction bone per limb carries what the Humanoid pose leaves over, which
+  brings every bone to 0.0° of the game.
+
 ## 5. How rendering works
 
 ### 5.1 The layers
@@ -488,5 +512,6 @@ command line. Later: VR headset support and a first-person view.
 ---
 
 *Working notes with every detail and the full history: `work\DIARY.md`. Model formats and
-pipeline: `work\MODEL_FORMAT_NOTES.md`. Abandoned high-frame-rate work:
+pipeline: `work\MODEL_FORMAT_NOTES.md`. Animation format and extraction:
+`work\ANIMATION_FORMAT_NOTES.md`. Abandoned high-frame-rate work:
 `work\HIGH_FRAMERATE_NOTES.md`.*

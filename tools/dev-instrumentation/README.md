@@ -35,6 +35,12 @@ Hooks the game's 146 Direct3D entry points (see `notes/RENDERER_API.md`). Copy `
 to `src/`, apply the patch (adds it to CMake and marks frame boundaries in `frame_stats.cpp`),
 rebuild. Run with `--d3d_trace_file=<path without spaces>`; **F10** records 30,000 calls.
 
+## Game: motion trace (`motion-trace/`)
+
+Logs the animation selection and per-part world matrices of Fei-Yen, to extract her animations
+exactly. A source file (`motion_trace.cpp`) and a patch script for a copy of the project; see
+`motion-trace/README.md` and `tools/model-export/ANIMATION_FORMAT_NOTES.md`.
+
 ## Scripts
 
 - `d3dtrace.py <trace.bin>`: calls per frame per function with sample arguments.

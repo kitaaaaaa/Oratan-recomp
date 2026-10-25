@@ -8,7 +8,9 @@ gold parts are HYPER-mode versions of the pink parts (normal mode = pink).
 Extract: `python work\farc.py <data.farc> work\farc_data`. Per robot XXX:
 - `xxx1c.mrg` / `xxx1c.mg2`: in-game model + textures (1P colours). `2c` = 2P colours.
   `1a`/`2a` = a smaller model set (111 objects for Fei-Yen; not what the game draws in battle).
-- `XXX.mt`: motion data (compressed keyframes; NOT decoded — not needed, see pipeline).
+- `XXX.mt`: motion data (keyframe curves; 629 + 340 table entries point at animation blocks; the container and the curve
+  evaluator are decoded, how the game maps channels to joints is not — see
+  ANIMATION_FORMAT_NOTES.md). The rig below was derived from captures, without decoding it.
 All data little-endian.
 
 ### .mrg (geometry)
