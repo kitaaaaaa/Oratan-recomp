@@ -320,8 +320,8 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
     }
   }
 
-  const uint8_t action = c.B(2);
-  if (action == 0 && c.B(180) > 240 && c.H(450) == 0 && c.B(3322) == 0) {
+  const uint8_t robot = c.B(2);
+  if (robot == 0 && c.B(180) > 240 && c.H(450) == 0 && c.B(3322) == 0) {
     c.SetH(290, 0);
     c.SetH(274, 0);
     c.SetH(272, 24);
@@ -337,7 +337,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
     StartMoves(c, k, base, busy);
     return;
   }
-  if (action == 10 && c.B(178) > 240 && c.B(179) > 240 && c.B(169) == 255) {
+  if (robot == 10 && c.B(178) > 240 && c.B(179) > 240 && c.B(169) == 255) {
     k.k.r6.u64 = 6;
     k.k.r5.u64 = 0;
     if (k.Call(__imp__sub_82257F50, c.a, 2) != 0 && (c.W(2192) & 1) == 0) {
@@ -579,7 +579,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
     c.SetH(296, 0);
     c.SetH(312, 0);
   };
-  if ((action == 3 || action == 13) && (busy || c.B(170) != 0) && c.B(180) == 255 &&
+  if ((robot == 3 || robot == 13) && (busy || c.B(170) != 0) && c.B(180) == 255 &&
       c.B(3320) == 0) {
     c.SetH(274, 0);
     c.SetH(278, 1);
@@ -590,7 +590,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
     c.SetH(4492, 0);
     c.SetH(312, 0);
     c.SetB(3320, 1);
-  } else if (action == 9 && c.B(170) != 0 && c.B(180) == 255) {
+  } else if (robot == 9 && c.B(170) != 0 && c.B(180) == 255) {
     c.SetH(274, 0);
     c.SetW(584, 0);
     c.SetH(272, 24);
@@ -618,7 +618,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
       } else if (!dash()) {
         clear_292 = false;
       }
-    } else if (action == 0 && s == 16) {
+    } else if (robot == 0 && s == 16) {
       c.SetH(272, 9);
       c.SetH(274, 0);
       c.SetW(584, 0);
@@ -627,7 +627,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
       c.SetH(292, 0);
       c.SetH(4492, 0);
       finish_ee10();
-    } else if (!busy && action == 9 && c.S16(450) > 0 && s == 12 &&
+    } else if (!busy && robot == 9 && c.S16(450) > 0 && s == 12 &&
                In(Control{base, c.W(72)}.H(274), {17, 18})) {
       const uint8_t unk_148 = c.B(148);
       c.SetH(274, 0);
@@ -637,7 +637,7 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
       c.SetH(276, 0);
       c.SetH(338, unk_148 != 0 ? 1 : 0);
       finish_ee10();
-    } else if (In(action, {1, 5, 16}) && (c.W(2192) & 0xF) == 15 && s == 9) {
+    } else if (In(robot, {1, 5, 16}) && (c.W(2192) & 0xF) == 15 && s == 9) {
       if (c.B(170) >= 252) {
         c.SetH(274, 0);
         c.SetW(584, 0);
@@ -657,13 +657,13 @@ void FreeState(PPCContext& ctx, uint8_t* base) {
         c.SetB(3321, 1);
       }
       finish_ee10();
-    } else if (action == 0 && c.S16(450) > 0) {
+    } else if (robot == 0 && c.S16(450) > 0) {
       finish_ee10();
     } else {
       static constexpr std::initializer_list<uint32_t> kMoving = {8, 0, 1, 16, 11};
       const bool other_flag = Control{base, c.W(72)}.B(4495) != 0;
-      if (other_flag && ((In(s, {13, 14}) && In(action, kMoving)) ||
-                         (In(s, {11, 12}) && !In(action, kMoving)))) {
+      if (other_flag && ((In(s, {13, 14}) && In(robot, kMoving)) ||
+                         (In(s, {11, 12}) && !In(robot, kMoving)))) {
         k.Call(__imp__sub_821DD810, c.a);
       } else if (In(s, {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15}) && c.B(170) >= 240) {
         c.SetH(278, 1);
@@ -710,7 +710,7 @@ void VerifyCall(PPCContext& ctx, uint8_t* base) {
       },
       [&] {
         const Control c{base, control};
-        return fmt::format("side {} sub {} action {}", control == game_address + kControl2 ? 2 : 1,
+        return fmt::format("side {} sub {} robot {}", control == game_address + kControl2 ? 2 : 1,
                            c.H(274), c.B(2));
       },
       600);

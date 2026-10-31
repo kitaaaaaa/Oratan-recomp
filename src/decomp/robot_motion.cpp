@@ -7,7 +7,7 @@
 //     one at +3340 over 60 ticks, with ground checks (sub_821FCBF8,
 //     sub_8222CB80), and the movement state is reset. Nothing else happens.
 //   - Otherwise it builds this tick's speed (+372) from multipliers (the
-//     robot's parameters, timers, a table for action 15, the value at
+//     robot's parameters, timers, a table for robot 15 (ajm), the value at
 //     kControlScale, which also caps it) and adds a velocity (+380, +388)
 //     that depends on the movement state: along the facing (+8), along a
 //     movement angle (+16), a fixed amount from the robot's parameters, or,
@@ -299,7 +299,7 @@ void MoveRobot(PPCContext& ctx, uint8_t* base) {
     c.SetF(kVelB, zero);
   } else if (c.U16(kRunUp) != 0) {
     const uint32_t run_up = (uint32_t(c.U16(kRunUp)) + 1) & 0xFFFF;
-    const uint8_t action = c.U8(2);
+    const uint8_t robot = c.U8(2);
     c.SetU16(kRunUp, run_up);
     SpeedModifiers(c, base, game_address, low);
     const uint32_t facing = c.U16(8);
@@ -319,7 +319,7 @@ void MoveRobot(PPCContext& ctx, uint8_t* base) {
       keep = scale > data(1476) || scale > data(1480) || scale > data(1484);
     } else if (state == 0) {
       const uint32_t sub = c.U16(274);
-      if (!(action == 0 && sub == 15 && c.U16(278) == 1)) {
+      if (!(robot == 0 && sub == 15 && c.U16(278) == 1)) {
         if ((sub == 11 || sub == 12) && !(scale > data(1476))) {
           keep = false;
         } else if ((sub == 13 || sub == 14) && !(scale > data(1480))) {
@@ -337,7 +337,7 @@ void MoveRobot(PPCContext& ctx, uint8_t* base) {
     PushAlongAtSpeed(calls, c, facing);
   } else {
     const uint32_t sub = c.U16(274);
-    const uint8_t action = c.U8(2);
+    const uint8_t robot = c.U8(2);
     const uint32_t move_angle = c.U16(kMoveAngle);
     if (state == 0 && sub >= 11 && sub <= 16) {
       // no velocity
@@ -372,7 +372,7 @@ void MoveRobot(PPCContext& ctx, uint8_t* base) {
       // no velocity
     } else {
       // The levers: sum_x along the facing, sum_y across it.
-      if (action == 17 && c.S16(80) <= c.S16(88) / 2) {
+      if (robot == 17 && c.S16(80) <= c.S16(88) / 2) {
         c.SetF(kSpeed, Single(Mul(c.F(kSpeed), GuestDouble(base, 0x82017330))));
       }
       const double low_scale_end =

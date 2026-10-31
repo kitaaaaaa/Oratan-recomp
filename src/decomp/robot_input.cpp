@@ -175,8 +175,8 @@ void AiInput(PPCContext c, uint8_t* base, uint32_t control) {
   if (ai.timer < 0) {
     const int32_t plan_before = ai.plan;
     __imp__sub_822108B8(c, base);  // with the registers the previous step left
-    const uint8_t action = game::GuestPtr<game::RobotControl>(base, control)->action;
-    if (action != 17 && action != 18) {
+    const uint8_t robot = game::GuestPtr<game::RobotControl>(base, control)->robot_id;
+    if (robot != 17 && robot != 18) {
       if (ai.plan == plan_before) {
         ai.repeats = ai.repeats + 1;
       } else {
@@ -746,12 +746,12 @@ void RobotInputTick(PPCContext& ctx, uint8_t* base) {
   table.threshold = rates.threshold;
   table.build = set + uint32_t(offsetof(game::ChargeParams, build));
   table.decay = set + uint32_t(offsetof(game::ChargeParams, decay));
-  const uint8_t action = c.action;
-  if (action == 11 && int16_t(uint16_t(c.unk_1C2)) > 0) SetChargeTables(table, game::kChargeFixedC);
-  if ((action == 4 || action == 11 || action == 12) && uint16_t(c.unk_1C2) >= 32768) {
+  const uint8_t robot = c.robot_id;
+  if (robot == 11 && int16_t(uint16_t(c.unk_1C2)) > 0) SetChargeTables(table, game::kChargeFixedC);
+  if ((robot == 4 || robot == 11 || robot == 12) && uint16_t(c.unk_1C2) >= 32768) {
     SetChargeTables(table, game::kChargeFixedB);
   }
-  if (action == 0 && int16_t(uint16_t(c.unk_1C2)) > 0) {
+  if (robot == 0 && int16_t(uint16_t(c.unk_1C2)) > 0) {
     table.build = game::kChargeQuarterBuild;
     table.decay = game::kChargeQuarterDecay;
     table.drop = game::kChargeQuarterDrop;

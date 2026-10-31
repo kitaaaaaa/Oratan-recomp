@@ -534,7 +534,7 @@ states 2, 12, 15, 25-28 a few (mostly spread); several small states none.
 control +3354 runs, the robot's position eases from one saved point toward another over 60 ticks
 with ground checks and the movement state resets (a warp back, presumably). Otherwise it builds
 the speed (+372) from multipliers in the robot's data (+1448/+1452/+1460), timers, a table for
-action 15, and the scale value (+4464), which also caps it, then adds a velocity (+380, +388)
+robot 15 (Ajim), and the scale value (+4464), which also caps it, then adds a velocity (+380, +388)
 by movement state: along the facing, along the movement angle (+16), facing + angle (state 2),
 fixed amounts from the robot's data (+3880, +3884), nothing (states 0 sub 11-16, 24-28, while
 frozen), or, by default, from the lever sums. The arithmetic settles what those are: velocity

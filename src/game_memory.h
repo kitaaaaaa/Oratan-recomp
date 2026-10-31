@@ -72,15 +72,15 @@ inline constexpr uint32_t kDirectionLookupSecond = 0x8203ADD4;
 // one of the robot's ChargeParams sets (or a fixed one) by sub_821FB390.
 inline constexpr uint32_t kChargeTable = 0x8386E948;
 // be<int32_t>[8] each: quarter-rate copies of the robot's normal set, used
-// while RobotControl::action is 0 and unk_1C2 is above 0.
+// while RobotControl::robot_id is 0 (dor) and unk_1C2 is above 0.
 inline constexpr uint32_t kChargeQuarterDrop = 0x8386E958;
 inline constexpr uint32_t kChargeQuarterDecay = 0x8386E978;
 inline constexpr uint32_t kChargeQuarterBuild = 0x8386E998;
 // be<int32_t>[8] each: fixed rates the three tables are set to in some states
 // (all three pointers get the same table).
 inline constexpr uint32_t kChargeFixedA = 0x8289CD14;  // RobotControl::unk_1BE set
-inline constexpr uint32_t kChargeFixedB = 0x8289CD34;  // action 4/11/12, unk_1C2 negative
-inline constexpr uint32_t kChargeFixedC = 0x8289CD54;  // action 11, unk_1C2 above 0
+inline constexpr uint32_t kChargeFixedB = 0x8289CD34;  // robots 4/11/12 (apb, aps, apc), unk_1C2 negative
+inline constexpr uint32_t kChargeFixedC = 0x8289CD54;  // robot 11 (aps), unk_1C2 above 0
 // AiControl per side: the CPU player's state (sub_82212A98).
 inline constexpr uint32_t kAiControl1 = 0x83876CC8;
 inline constexpr uint32_t kAiControl2 = 0x83876BA8;
@@ -347,7 +347,7 @@ struct RobotControl {
   // +0x01 (= Robot::cpu_controlled): where the input comes from: 0 the
   // player's levers, 1 or 4 the CPU (AiControl), 5 PlaybackInput, 8 none.
   uint8_t mode;
-  uint8_t action;  // +0x02: compared with 0, 4, 11, 12 when choosing charge rates
+  uint8_t robot_id;  // +0x02: which robot (robot_id; kRobotFileNames: 0 dor ... 18 tgm)
   uint8_t unk_003[0x06 - 0x03];
   // +0x06 (Robot +0x72) and +0x08 (Robot +0x74, Robot::facing): subtracted
   // from the u16s at kControlRef1 / kControlRef2 (sub_821FA290).
