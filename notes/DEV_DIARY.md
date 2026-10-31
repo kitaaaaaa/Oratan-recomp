@@ -435,6 +435,33 @@ then: a replay gives real inputs to sweep with, which a `Verifier` input generat
 and functions that call the scene code or the renderer will need the "same call, same
 arguments" dry-run check (not yet written, nothing has needed it).
 
+**`sub_822A71B0`, robot commands from input** (2026-10-12, checked 2026-10-30,
+`robot_control.cpp`). Runs once per tick. It stores `kInputSource` into
+`Game::input_sources[0..3]` (+0xCEA0; what it points to isn't known). While
+`kCommandCapture` (0x839C28AC) is active it only stores side 0's command word there and builds
+no robot commands that tick. Otherwise each side's 16-bit command word is built from its
+`PlayerActions` record (0x82AFF1E0, 2152 bytes per side; `sub_822AABE0`): four directions and
+two buttons per lever, Start (0x1000) and one extra bit, as `game::command`. When the online
+source (`kOnlineInput`, 0x829BF3A0, probably Xbox Live versus) has a session, its words replace
+the players' (0 while it isn't ready); its lookup (`sub_8213D830`, an STL map) is kept as the
+original. Each word is then split into the side's lever channels with history
+(`Game::levers`, +0x264: now, previous, pressed per lever; `sub_822A7070`), and stored without
+Start in `Game::robot_commands` (+0x6148). It never reads which robot is playing: every robot
+gets the same word for the same input, and the robots differ only in what they do with it.
+Which bit is which direction or button isn't confirmed yet. Local versus' steps
+(`BeforeRobotCommands` / `AfterRobotCommands`, gated by `LocalVersusOn()`, which netplay
+uses too) run in the same hook around the rewrite or the original.
+
+Constructed inputs don't fit a function with input history, so it is checked on every call
+while replaying (`decomp_verify_calls`, `Verifier::CheckCall`): the current game state is the
+input, the original and the rewrite run from it in turn, and the first 50 calls also compare
+the whole data section. Results: `work/r3.otr`, 4,200 calls, 0 mismatches, and a planted bug
+gave 1,057; `tests/replays/feiyen_training.otr` (Fei-Yen in Training, every movement state
+with all three weapons), over 21,000 calls, 0 mismatches. End to end, with the rewrite active
+and the check off, both replay with 0 drifting ticks. One robot is enough for the reference
+set because of the above; the recording, its save state and how to run it are in
+`tests/replays/README.md`.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
