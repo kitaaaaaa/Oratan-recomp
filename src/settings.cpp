@@ -34,6 +34,10 @@ constexpr Managed kManaged[] = {
     {"split_swap_sides", false}, {"dual_monitor_span", true},
     {"native_render_targets", false}, {"native_resolution", false}, {"native_msaa", false},
     {"anisotropic_override", false}, {"native_shadows", false}, {"native_ao_strength", false},
+    // Netplay preferences only; hosting or joining comes from the command line
+    // the Options window restarts with, so a normal launch stays offline.
+    {"netplay_port", false}, {"netplay_address", true}, {"netplay_delay", false},
+    {"netplay_pad", false},
 };
 
 std::string KeyOf(const std::string& line) {

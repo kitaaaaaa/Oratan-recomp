@@ -50,7 +50,7 @@ endif()
 rexglue_setup_target(oratan GPU_PLUGINS xenos)
 
 if(WIN32)
-    target_link_libraries(oratan PRIVATE ws2_32)  # netplay sockets
+    target_link_libraries(oratan PRIVATE ws2_32 shell32)  # netplay sockets; relaunch argv
 endif()
 
 # Window title without the SDK build tag (see src/sdk_version_override.h).

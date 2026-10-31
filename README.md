@@ -91,6 +91,30 @@ to the CPU. With split screen on but player 2 control off, the second view
 shows the LIVE MONITOR camera from Observer mode. With split screen on, Arcade's Continue and Game Over screens are
 also shown twice, side by side.
 
+### Online versus (experimental)
+
+Two players on different PCs can play versus over the internet or a local
+network. The game has to start in step on both PCs, so starting or leaving a
+session restarts it.
+
+1. **Player 1 hosts:** press **F1**, open **Netplay**, pick **Host**, and press
+   **Host (restarts the game)**. The game restarts and waits for player 2. The
+   panel lists this PC's addresses to give player 2.
+2. **Player 2 joins:** press **F1**, open **Netplay**, pick **Join**, type the
+   host's address and port (for example `192.168.1.20:7000`), and press
+   **Join (restarts the game)**.
+3. Once connected, both games start together and play from the title screen.
+   Player 2 drives the opponent, and each player sees their own robot.
+
+Both PCs need the same game files, save data and settings. Over the internet,
+the host forwards the UDP port (7000 by default) to their PC, or both players
+use a VPN such as ZeroTier or Tailscale. **Input delay** (set by the host)
+hides network lag: 3 suits a local network, 4-5 a connection of about 40 ms.
+The panel says when the game had to wait for the other player often, and
+warns if the two games fall out of sync. **Leave netplay** restarts the game
+offline. If the other player disconnects, the game carries on offline after 10
+seconds.
+
 ### Hidden stages and Bradtos (Training)
 
 The game has stages and a boss that its menus never offer. In Training:
@@ -119,7 +143,8 @@ crash or misbehave and are left out.
 | VSync, windowed mode | Working |
 | Local two-player versus with split screen | Working, experimental, see above |
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
-| Xbox Live / System Link | Not yet supported |
+| Online versus (netplay, F1 → Netplay) | Experimental, tested on one PC; see above |
+| Original Xbox Live / System Link menus | Not supported (netplay replaces them) |
 
 ## Building from source
 

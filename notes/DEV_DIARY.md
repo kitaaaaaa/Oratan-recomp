@@ -504,6 +504,20 @@ controller-read hooks are in `tick_hooks.cpp` (netplay, then replay), the finger
   carry on; mid-fight the opponent's robot goes back to the CPU.
 - Not tested yet: two PCs (LAN or internet).
 
+**F1 Netplay panel** (2026-10-24, cloud session; not yet built or run with the game). Netplay has
+to run from boot, so the panel's **Host** / **Join** / **Leave** buttons restart the game with
+`--netplay_host=PORT` / `--netplay_join=ADDRESS:PORT` added or removed (`RelaunchArgs` in
+`relaunch.cpp`, which rewrites the command line with `CommandLineToArgvW` and re-quotes it).
+Those two are never saved, so a normal launch is offline; `netplay_port`, `netplay_address`,
+`netplay_delay` and `netplay_pad` are remembered. While waiting or joining it shows the state and
+a **Cancel** button (`CancelNetplayWait`: the game carries on offline); once connected, the
+peer, player, delay, the last 30 s report's stalls and any desync (`GetNetplayStatus`); after a
+failure or the end, the reason. The host sees its IPv4 addresses (`LocalIpv4Addresses`). Checked
+in the cloud: status and both cancel paths with the real netplay code, a two-process session
+still in sync, and the command line rewrite round-tripping through the Windows parsing rules
+(spaces, quotes, trailing backslashes, both `--opt=v` and `--opt v`). Open question: whether the
+F1 window draws while the host waits at boot (the game thread is blocked then).
+
 **Asked for next** (owner, 2026-10-12): with local versus or netplay, player 2 should get their
 own VR select (Training, Arcade, Score Attack) instead of a copy of player 1's, and Training's
 select cursor should say "PLAYER 2" instead of "AI". An F1 Netplay panel would replace the
