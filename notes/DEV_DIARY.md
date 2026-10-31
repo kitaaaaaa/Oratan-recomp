@@ -550,6 +550,22 @@ check named the field at once (position x, state 19 substate 0): a condition rea
 where the original branches on `< 2`. Fixed: over 40,000 calls, 0 mismatches, end to end 0
 drifting ticks. A planted sign flip in the sideways term gave 503 mismatches.
 
+**`sub_821EE610`, movement state 0** (2026-10-31, `robot_states.cpp`). The free state's handler
+(1,185 instructions, the largest so far). Each tick it clears a few flags, then by substate
+(+274): 0 checks for dashes and turns (`sub_821DD180`) and a few jumps to states 24/25 or
+substate 17; 2-10 and 11-16 hand over to `sub_821E0EA0` / `sub_821EDA98`; 17/18 and 19/20
+run timed moves with limits from the robot's parameters (+2104 / +2114) and a 3-entry move
+table at 0x82027F10. At the end of every path it may start a new move from the buttons' hold
+timers, the latched direction class and `RobotInput::angle`: state 12, 19 or 2 with values
+from four u16 tables indexed by the class (0x82027C28, 0x82027C38, 0x82027E00, 0x82027E10),
+or state 1 along the angle. Most of the fields it touches aren't named yet, so the rewrite
+writes them by offset. All 19 callees stay original; since the original passes some of them
+the registers the previous call left (`sub_821E0160` after `sub_821DD230`), the rewrite keeps
+one register context running through all its calls. Checked on `feiyen_training.otr`: 23,400
+calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 23,930
+(the first plant didn't apply because of the file's line endings, so it proved nothing and
+was redone).
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
