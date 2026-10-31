@@ -496,6 +496,30 @@ the check has to restore the generator too: `sub_822A7460` (call counter `kRando
 15 bits from a Mersenne Twister whose state is on the heap (`kRandomGenerators`); without it
 the original's draw changed what the rewrite's run saw. Next: `sub_821FA290`.
 
+**`sub_821FA290`, the lever vectors** (2026-10-31, `robot_input.cpp`, `LeverMovement`). A leaf
+(only the Game getter and the angle function `sub_822A73D8`, kept as the original). Each
+lever's eight charge meters become an (x, y) vector, straight directions weighted 2 and
+diagonals 1.414. From the two vectors: the y sum (negated), y difference (negated) and x sum,
+times 1/5120, times 0.7 while the float at `kControlScale` is under 70 and rising to 1.0 at
+100; how much the y sum, x sum and their length changed (x4096, `TrackChange`: jumps to a
+bigger change, else eases to 0 by 256); `spread`, the x difference /6144 clamped to +-1 and
+squared keeping the sign (0 within +-0.05), times one of 12 robot parameters (36 counting the
+third rate set) picked by movement state, flags, held buttons and a reference value in
++-4096 / +-6144; `spread_sign` when the levers point opposite ways sideways (beyond +-0.2) and
+the y sum is near 0; in the third rate set the same for the y difference with both buttons
+held, or a counter for some direction codes; and an angle from the y and x sums, as a quadrant
+(0 / 16384 / 32768 / 49152) when spread is above 0.2, kept in `held_angle` while the direction
+has been held under 11 ticks. What each output moves in the game isn't confirmed yet.
+
+It does its maths in a mix of single and double precision, so the rewrite is one call per
+PowerPC float instruction in the original's order (rounding through float for the single
+ones, `std::fma` for fmadd, the recompiler's fctiwz edge cases), with `#pragma clang fp
+contract(off)` so the compiler can't fuse any of them, and the constants are read from guest
+memory. Checked with `sub_821FB390`'s call check (it compares against the original
+`sub_821FB390`, which calls the original `sub_821FA290`): over 39,000 calls, 0 mismatches;
+end to end 0 drifting ticks; a planted bug (easing by 255) gave 792 mismatches. With this,
+everything from controller to the robot's input fields is rewritten except the CPU's steps.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

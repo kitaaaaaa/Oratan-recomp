@@ -11,15 +11,24 @@
 //     or the player's levers through the two DirectionLookup tables.
 //   - Sorts the code into a class 0-7 (sub_821F9BC8), points kChargeTable at
 //     one of the robot's ChargeParams sets (or a fixed or quarter-rate one),
-//     runs the charge meters (sub_821F9DE0) and then the robot's movement
-//     code (sub_821FA290, still the original), and afterwards counts the
-//     button hold timers and latches the direction class on some presses.
+//     runs the charge meters (sub_821F9DE0) and then turns them into lever
+//     vectors (sub_821FA290, LeverMovement), and afterwards counts the button
+//     hold timers and latches the direction class on some presses.
 //   Every robot goes through it the same way; what differs per robot is the
-//   ChargeParams in its parameters and sub_821FA290's use of the result.
+//   numbers in its parameters (charge rates, spread scales).
 //
-// The CPU player's own steps (eight functions under sub_82212A98) and
-// sub_821FA290 are called as the original code, with the same arguments the
-// original passes.
+// sub_821FA290: each lever's eight meters as an (x, y) vector; the two
+//   levers' y sum, y difference and x sum (scaled, eased in by the value at
+//   kControlScale) and how much they changed; `spread`, the levers' squared x
+//   difference times a robot parameter picked by state, buttons and a
+//   reference value; in the third rate set the same for the y difference
+//   with both buttons held, or a counter for some direction codes; and an
+//   angle from the y and x sums (sub_822A73D8, original), as a quadrant when
+//   spread is large.
+//
+// The CPU player's own steps (eight functions under sub_82212A98) and the
+// angle function are called as the original code, with the same arguments
+// and stack frames the original passes.
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -27,14 +36,19 @@
 #include "../game_memory.h"
 #include "decomp.h"
 
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
 #include <fmt/format.h>
 
+// Each guest float instruction is its own operation (see LeverMovement).
+#pragma clang fp contract(off)
+
 REX_EXTERN(__imp__sub_821FB390);
 REX_EXTERN(__imp__sub_821F9BC8);
-REX_EXTERN(__imp__sub_821FA290);
+REX_EXTERN(__imp__sub_822A73D8);
 REX_EXTERN(__imp__sub_822118F0);
 REX_EXTERN(__imp__sub_8220F790);
 REX_EXTERN(__imp__sub_822108B8);
@@ -302,7 +316,7 @@ void UpdateCharge(uint8_t* base, uint32_t input_address, bool hold) {
         in.unk_0C = uint8_t(count - 1);
       } else if (count == 0) {
         in.unk_0C = 255;
-        in.unk_58 = -1;
+        in.angle = -1;
       }
       in.lockout = 0;
       DrainBoth(base, input_address, t);
@@ -314,6 +328,307 @@ void UpdateCharge(uint8_t* base, uint32_t input_address, bool hold) {
   in.lockout = 0;
   ChargeLever(base, input_address, 18, code >> 8, t);
   ChargeLever(base, input_address, 26, code & 0xFF, t);
+}
+
+// --- sub_821FA290: the lever vectors -----------------------------------------
+//
+// Bit-exact with the recompiled original: each PowerPC float instruction is
+// one call below, in the original's order (single-precision results are
+// rounded through float, fmadd is std::fma), and the file is compiled with
+// contraction off so no two of them get fused.
+
+double Mul(double a, double b) { return a * b; }
+double Add(double a, double b) { return a + b; }
+double Sub(double a, double b) { return a - b; }
+double Fma(double a, double b, double c) { return std::fma(a, b, c); }                // fmadd
+double NegFmaSub(double a, double b, double c) { return -std::fma(a, b, -c); }       // fnmsub
+double Single(double a) { return double(float(a)); }                                 // frsp
+double SingleSqrt(double a) { return double(float(std::sqrt(a))); }                  // fsqrts
+
+// fctiwz as the recompiler does it: NaN and too small give INT_MIN, too big INT_MAX.
+int32_t TruncToInt(double v) {
+  if (std::isnan(v)) return INT32_MIN;
+  if (v >= double(INT32_MAX)) return INT32_MAX;
+  if (v < -2147483648.0) return INT32_MIN;
+  return int32_t(v);
+}
+
+double GuestDouble(const uint8_t* base, uint32_t address) {
+  return std::bit_cast<double>(uint64_t(*game::GuestPtr<be<uint64_t>>(base, address)));
+}
+double GuestFloat(const uint8_t* base, uint32_t address) {
+  return double(std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, address))));
+}
+
+// The constants it reads (values as found: 1.414..., 2.0, 1/6144, 1.0, -1.0,
+// 0.05, -0.05, 0.0, 70, 1/5120, 0.01, 0.7, 100, 70, 4096, 0.2, -0.2, 0.65).
+struct MovementConstants {
+  double diagonal, straight, spread_scale, spread_max, spread_min, dead_hi, dead_lo, zero;
+  double scale_low_end, sum_scale, scale_ramp, scale_low, scale_high_end, scale_ramp_start;
+  double change_scale, spread_on, spread_on_neg, spread_angle;
+  explicit MovementConstants(const uint8_t* base)
+      : diagonal(GuestDouble(base, 0x8203AE48)),
+        straight(GuestDouble(base, 0x82007C00)),
+        spread_scale(GuestDouble(base, 0x8203AE40)),
+        spread_max(GuestFloat(base, 0x82000958)),
+        spread_min(GuestFloat(base, 0x82001370)),
+        dead_hi(GuestDouble(base, 0x82016318)),
+        dead_lo(GuestDouble(base, 0x8203AE38)),
+        zero(GuestFloat(base, 0x8200095C)),
+        scale_low_end(GuestFloat(base, 0x82017830)),
+        sum_scale(GuestDouble(base, 0x8203AE30)),
+        scale_ramp(GuestDouble(base, 0x820217A0)),
+        scale_low(GuestDouble(base, 0x8203AE28)),
+        scale_high_end(GuestFloat(base, 0x82001514)),
+        scale_ramp_start(GuestDouble(base, 0x8203AE20)),
+        change_scale(GuestDouble(base, 0x8203AE18)),
+        spread_on(GuestDouble(base, 0x820173B0)),
+        spread_on_neg(GuestDouble(base, 0x82018FD8)),
+        spread_angle(GuestDouble(base, 0x8203AE10)) {}
+};
+
+struct Vector {
+  double x, y;
+};
+
+// One lever's charge meters (directions 0-7) as an (x, y) vector: straight
+// directions weigh `straight`, diagonals `diagonal`.
+Vector LeverVector(const be<uint16_t> (&meters)[8], const MovementConstants& k) {
+  double m[8];
+  for (int i = 0; i < 8; ++i) m[i] = double(int16_t(uint16_t(meters[i])));
+  const double a = Mul(m[1], k.diagonal), b = Mul(m[3], k.diagonal);
+  const double c = Mul(m[7], k.diagonal), d = Mul(m[5], k.diagonal);
+  const double p = Fma(m[0], k.straight, a), q = Fma(m[2], k.straight, b);
+  const double t1 = Sub(p, b), t2 = Add(q, a);
+  const double u = NegFmaSub(m[4], k.straight, t1), v = Sub(c, t2);
+  const double w = Sub(u, d), z = Fma(m[6], k.straight, v);
+  return {Single(Add(w, c)), Single(Add(z, d))};
+}
+
+// Clamped to [min, max], then squared keeping the sign, 0 inside the dead zone.
+double SignedSquare(double v, const MovementConstants& k) {
+  if (v > k.spread_max) {
+    v = k.spread_max;
+  } else if (v < k.spread_min) {
+    v = k.spread_min;
+  }
+  if (v > k.dead_hi) return Single(Mul(v, v));
+  if (v < k.dead_lo) return -Single(Mul(v, v));
+  return k.zero;
+}
+
+// Follows a change: jumps to a bigger one, else eases toward 0 by 256.
+void TrackChange(be<uint16_t>& field, int32_t change) {
+  const int16_t current = int16_t(uint16_t(field));
+  if ((change > 0 && current < change) || (change < 0 && current > change)) {
+    field = uint16_t(change);
+  } else if (current > 256) {
+    field = uint16_t(current - 256);
+  } else if (current < -256) {
+    field = uint16_t(current + 256);
+  } else {
+    field = 0;
+  }
+}
+
+// A robot parameter as the original reads it: the low half of a word, signed.
+int32_t Param(const uint8_t* base, uint32_t params, uint32_t offset) {
+  return int16_t(uint16_t(uint32_t(*game::GuestPtr<be<uint32_t>>(base, params + offset))));
+}
+bool Within(int32_t v, int32_t limit) { return v > -limit && v < limit; }
+
+// The parameter that scales `spread`, by state, buttons and the second reference value.
+int32_t SpreadParam(const uint8_t* base, uint32_t params, const game::RobotControl& c,
+                    int32_t yaw, bool busy, bool spread_input) {  // yaw: relative2
+  const auto P = [&](uint32_t offset) { return Param(base, params, offset); };
+  const bool no_buttons = c.input.hold_0002 == 0 && c.input.hold_0200 == 0;
+  const bool flagged = (uint32_t(c.movement_flags) & 21) != 0;
+  if (!busy) {
+    if (c.movement_state == 19 && c.movement_substate == 0) {
+      return c.unk_090 ? P(452) : Within(yaw, 6144) ? P(448) : P(444);
+    }
+    if (flagged) return Within(yaw, 4096) ? P(464) : Within(yaw, 6144) ? P(460) : P(456);
+    if (no_buttons) return c.unk_090 ? P(428) : Within(yaw, 6144) ? P(424) : P(420);
+    return c.unk_090 ? P(440) : Within(yaw, 6144) ? P(436) : P(432);
+  }
+  if (spread_input) {
+    if (c.movement_state == 19 && c.movement_substate == 0) {
+      return c.unk_090 ? P(716) : Within(yaw, 6144) ? P(708) : P(700);
+    }
+    if (flagged) return Within(yaw, 4096) ? P(740) : Within(yaw, 6144) ? P(732) : P(724);
+  } else if (flagged) {
+    // (In this case the original tests 6144 before 4096, so 724 is never picked.)
+    return Within(yaw, 6144) ? P(732) : Within(yaw, 4096) ? P(724) : P(740);
+  }
+  if (no_buttons) return c.unk_093 ? P(668) : Within(yaw, 6144) ? P(660) : P(652);
+  return c.unk_093 ? P(692) : Within(yaw, 6144) ? P(684) : P(676);
+}
+
+// sub_822A73D8 (original): an angle from (f1, f2), upper half of the result.
+uint32_t Angle(const PPCContext& frame, uint8_t* base, double f1, double f2) {
+  PPCContext call = frame;
+  call.f1.f64 = f1;
+  call.f2.f64 = f2;
+  __imp__sub_822A73D8(call, base);
+  return call.r3.u32;
+}
+
+// sub_821FA290. `frame` is its caller's; it adds its own 176-byte frame.
+void LeverMovement(PPCContext frame, uint8_t* base, uint32_t input_address,
+                   uint32_t control_address, uint32_t params) {
+  frame.r1.u64 = frame.r1.u32 - 176;
+  frame.fpscr.disableFlushMode();
+  const uint32_t game_address = GameAddress(base);
+  auto& c = *game::GuestPtr<game::RobotControl>(base, control_address);
+  game::RobotInput& in = c.input;
+  const MovementConstants k(base);
+
+  const Vector first = LeverVector(in.charge[0], k);
+  const Vector second = LeverVector(in.charge[1], k);
+  const double spread = SignedSquare(Single(Mul(Single(Sub(second.x, first.x)), k.spread_scale)), k);
+
+  const double sum_y = Single(Add(second.y, first.y));
+  const double diff_y = Single(Sub(first.y, second.y));
+  const double sum_x = Single(Add(second.x, first.x));
+  const double scale = GuestFloat(base, control_address + game::kControlScale);
+  double out_x = Single(Mul(sum_x, k.sum_scale));
+  double out_y = Single(Mul(-sum_y, k.sum_scale));
+  double out_diff = Single(Mul(-diff_y, k.sum_scale));
+  if (scale < k.scale_low_end) {
+    out_y = Single(Mul(out_y, k.scale_low));
+    out_diff = Single(Mul(out_diff, k.scale_low));
+    out_x = Single(Mul(out_x, k.scale_low));
+  } else if (scale < k.scale_high_end) {
+    const double f = Fma(Sub(scale, k.scale_ramp_start), k.scale_ramp, k.scale_low);
+    out_y = Single(Mul(f, out_y));
+    out_diff = Single(Mul(f, out_diff));
+    out_x = Single(Mul(f, out_x));
+  }
+
+  const double old_y = double(float(in.sum_y));
+  const double old_x = double(float(in.sum_x));
+  TrackChange(in.sum_y_change, TruncToInt(Mul(Single(Sub(old_y, out_y)), k.change_scale)));
+  TrackChange(in.sum_x_change, TruncToInt(Mul(Single(Sub(old_x, out_x)), k.change_scale)));
+  const double old_length = SingleSqrt(Single(Fma(old_x, old_x, Single(Mul(old_y, old_y)))));
+  const double new_length = SingleSqrt(Single(Fma(out_x, out_x, Single(Mul(out_y, out_y)))));
+  TrackChange(in.length_change, TruncToInt(Mul(Single(Sub(old_length, new_length)), k.change_scale)));
+  in.sum_y = float(out_y);
+  in.spread_sign = 0;
+  in.diff_y = float(out_diff);
+  in.sum_x = float(out_x);
+
+  // The two reference values relative to the robot's (absolute while Game
+  // +0x6164 is set); the second picks among the spread parameters, the first
+  // among the third set's lift parameters.
+  const bool busy = *game::GuestPtr<be<int32_t>>(base, game_address + kGameBusy) != 0;
+  const auto control_u16 = [&](uint32_t offset) {
+    return uint16_t(*game::GuestPtr<be<uint16_t>>(base, control_address + offset));
+  };
+  const int32_t relative2 = int16_t(busy ? control_u16(game::kControlRef2)
+                                         : uint16_t(control_u16(game::kControlRef2) - c.facing));
+  const int32_t relative1 = int16_t(busy ? control_u16(game::kControlRef1)
+                                         : uint16_t(control_u16(game::kControlRef1) - c.unk_006));
+
+  // The levers pointing opposite ways sideways.
+  const bool spread_input = (first.x < k.spread_on_neg && second.x > k.spread_on) ||
+                            (first.x > k.spread_on && second.x < k.spread_on_neg);
+  const bool sideways = std::fabs(out_y) < k.scale_ramp && spread_input;
+  if (sideways) in.direction_class2 = 255;
+  const int32_t parameter = SpreadParam(base, params, c, relative2, busy, sideways);
+  const int32_t spread_amount = TruncToInt(Single(Mul(Single(double(parameter)), spread)));
+  in.spread = spread_amount;
+  if (sideways) {
+    if (spread_amount > 0) {
+      in.spread_sign = 1;
+    } else if (spread_amount < 0) {
+      in.spread_sign = -1;
+    }
+  }
+
+  in.unk_0E = 255;
+  if (busy) {
+    if (in.hold_0200 != 0 && in.hold_0002 != 0) {
+      const double lift = SignedSquare(Single(Mul(Single(Sub(second.y, first.y)), k.spread_scale)), k);
+      const auto P = [&](uint32_t offset) { return Param(base, params, offset); };
+      int32_t value;
+      if ((uint32_t(c.movement_flags) & 21) != 0) {
+        value = Within(relative1, 4096) ? P(736) : Within(relative1, 6144) ? P(728) : P(720);
+      } else if (c.unk_092 != 0) {
+        value = P(664);
+      } else {
+        value = (relative1 > -9216 && relative1 < 3072) ? P(656) : P(648);
+      }
+      in.y_spread = TruncToInt(Single(Mul(Single(double(value)), lift)));
+    } else {
+      const uint16_t state = c.movement_state;
+      if (state == 0 || state == 1 || state == 21) {
+        const uint16_t code = in.direction;
+        const int32_t v = in.unk_0F;
+        if (code == 262 || code == 774 || code == 518 || code == 517 || code == 519) {
+          if (v < 0) {
+            in.unk_0F = 1;
+          } else if (v < 127) {
+            in.unk_0F = int8_t(v + 1);
+          }
+          in.unk_0E = 0;
+        } else if (code == 1537 || code == 1539 || code == 1538 || code == 1282 || code == 1794) {
+          if (v > 0) {
+            in.unk_0F = -1;
+          } else if (v > -127) {
+            in.unk_0F = int8_t(v - 1);
+          }
+          in.unk_0E = 1;
+        } else if (v > 40 || v < -40) {
+          in.unk_0F = int8_t(v / 2);  // rounds toward 0, as srawi + addze
+        } else if (v > 10) {
+          in.unk_0F = int8_t(v - 2);
+        } else if (v < -10) {
+          in.unk_0F = int8_t(v + 2);
+        } else {
+          in.unk_0F = 0;
+        }
+      }
+    }
+  }
+
+  in.latched_class = 255;
+  in.angle = -1;
+  const double spread_size = std::fabs(spread);
+  if (!(spread_size < k.spread_angle) || in.lockout == 0) {
+    if (spread_size > k.spread_on) {
+      const uint32_t a = (uint32_t(int32_t(Angle(frame, base, out_y, out_x)) >> 1)) & 0x7FFF;
+      if (a > 4096 && a <= 8192) {
+        in.angle = 16384;
+      } else if (a > 8192 && a < 24576) {
+        in.angle = 32768;
+      } else if (a >= 24576 && a < 28672) {
+        in.angle = 49152;
+      } else {
+        in.angle = 0;
+      }
+    } else if (in.direction != 0xFFFF) {
+      in.angle = int32_t(Angle(frame, base, out_y, out_x) & 0xFFFF);
+    }
+  }
+
+  if (in.direction == 0xFFFF) {
+    const uint8_t ticks = in.no_direction_ticks;
+    in.same_direction_ticks = 0;
+    if (ticks < 255) in.no_direction_ticks = uint8_t(ticks + 1);
+    return;
+  }
+  if (in.direction != in.previous_direction) {
+    in.same_direction_ticks = 0;
+  } else if (in.same_direction_ticks < 255) {
+    in.same_direction_ticks = uint8_t(in.same_direction_ticks + 1);
+  }
+  const uint8_t same = in.same_direction_ticks;
+  in.no_direction_ticks = 0;
+  if (same < 11 && uint32_t(int32_t(in.angle)) <= 65535) {
+    in.held_angle = int32_t(in.angle);
+  } else {
+    in.held_angle = -1;
+  }
 }
 
 void SetChargeTables(game::ChargeTable& t, uint32_t table) {
@@ -467,11 +782,8 @@ void RobotInputTick(PPCContext& ctx, uint8_t* base) {
   UpdateCharge(base, input_address, hold);
   {
     PPCContext movement = ctx;
-    movement.r1.u64 = movement.r1.u32 - 160;
-    movement.r3.u64 = input_address;
-    movement.r4.u64 = control_address;
-    movement.r5.u64 = params;
-    __imp__sub_821FA290(movement, base);
+    movement.r1.u64 = movement.r1.u32 - 160;  // sub_821FB390's frame
+    LeverMovement(movement, base, input_address, control_address, params);
   }
 
   // Button timers (held / pressed as the movement code left them).

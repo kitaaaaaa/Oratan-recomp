@@ -274,7 +274,8 @@ static_assert(offsetof(Robot, bone_table) == 0x4B8);
 // channel) in the low byte, the second (right channel) in the high byte, so
 // 0x0001/0x0002 are the first lever's buttons and 0x0100/0x0200 the second's.
 struct RobotInput {
-  uint8_t unk_00[2];
+  uint8_t same_direction_ticks;  // +0x00: ticks `direction` stayed the same (up to 255)
+  uint8_t no_direction_ticks;    // +0x01: ticks with no direction (0xFFFF), up to 255
   uint8_t direction_class;   // +0x02: `direction` sorted into 0-7 (sub_821F9BC8), 255 = none
   uint8_t direction_class2;  // +0x03: set together with it
   uint8_t latched_class;     // +0x04: direction_class copied when a button press meets the state rules
@@ -291,14 +292,19 @@ struct RobotInput {
   uint8_t lever_timer;
   uint8_t unk_0C;            // +0x0C: sub_821F9DE0
   uint8_t unk_0D;            // +0x0D: minus unk_0C
-  uint8_t unk_0E[2];
+  uint8_t unk_0E;            // +0x0E: sub_821FA290 sets 255, or 1 / 0 with unk_0F
+  int8_t unk_0F;             // +0x0F: counts up or down for some direction codes (third rate set)
   uint8_t hold_0001;  // +0x10: 255 on press, counts down while held
   uint8_t hold_0100;  // +0x11
   uint8_t hold_0002;  // +0x12
   uint8_t hold_0200;  // +0x13
   uint8_t hold_extra; // +0x14: the extra channel's 0x20 (command::kExtra0)
   uint8_t direction_changed;  // +0x15: 0 same as last tick, else 1 or 2
-  uint8_t unk_16[0x1C - 0x16];
+  // +0x16-0x1B: how much sum_y, sum_x and their length changed this tick
+  // (scaled to an int; jumps to a bigger change, else eases to 0 by 256).
+  be<uint16_t> sum_y_change;
+  be<uint16_t> sum_x_change;
+  be<uint16_t> length_change;
   be<uint16_t> previous_direction;  // +0x1C
   // +0x1E: direction code: first lever's direction in the high byte, the
   // second's in the low byte (DirectionLookup); 0xFFFF = none.
@@ -309,14 +315,30 @@ struct RobotInput {
   be<uint16_t> charge[2][8];
   be<uint32_t> held;     // +0x44
   be<uint32_t> pressed;  // +0x48: held now and not last tick
-  uint8_t unk_4C[0x58 - 0x4C];
-  be<int32_t> unk_58;  // +0x58: sub_821F9DE0 sets it to -1
+  // +0x4C-0x57 (sub_821FA290): each lever's charge meters make an (x, y)
+  // vector; these are the two levers' y sum (negated), y difference
+  // (negated) and x sum, scaled, and scaled again by a robot value in some
+  // ranges. What each one moves isn't confirmed yet.
+  be<float> sum_y;
+  be<float> diff_y;
+  be<float> sum_x;
+  // +0x58: an angle from sum_y and sum_x (sub_822A73D8), or a quadrant
+  // (0, 16384, 32768, 49152) when `spread` is large; -1 = none.
+  be<int32_t> angle;
+  be<int32_t> held_angle;  // +0x5C: `angle` while the direction is held under 11 ticks, else -1
+  be<int32_t> spread;      // +0x60: the levers' x difference, squared, times a robot parameter
+  uint8_t unk_64[4];
+  be<int32_t> spread_sign;  // +0x68: 1 / -1 when the levers point opposite ways sideways, else 0
+  be<int32_t> y_spread;     // +0x6C: like `spread` for the y difference (third rate set, both buttons held)
 };
-static_assert(sizeof(RobotInput) == 0x5C);
+static_assert(sizeof(RobotInput) == 0x70);
+static_assert(offsetof(RobotInput, sum_y_change) == 0x16);
 static_assert(offsetof(RobotInput, direction) == 0x1E);
 static_assert(offsetof(RobotInput, charge) == 0x24);
 static_assert(offsetof(RobotInput, held) == 0x44);
-static_assert(offsetof(RobotInput, unk_58) == 0x58);
+static_assert(offsetof(RobotInput, sum_y) == 0x4C);
+static_assert(offsetof(RobotInput, angle) == 0x58);
+static_assert(offsetof(RobotInput, y_spread) == 0x6C);
 
 // A robot's control block, at Robot +0x6C (Game +25020 for side 1, +29516
 // for side 2); sub_821FB390 runs on it once per tick.
@@ -326,19 +348,39 @@ struct RobotControl {
   // player's levers, 1 or 4 the CPU (AiControl), 5 PlaybackInput, 8 none.
   uint8_t mode;
   uint8_t action;  // +0x02: compared with 0, 4, 11, 12 when choosing charge rates
-  uint8_t unk_003[0x4C - 0x03];
+  uint8_t unk_003[0x06 - 0x03];
+  // +0x06 (Robot +0x72) and +0x08 (Robot +0x74, Robot::facing): subtracted
+  // from the u16s at kControlRef1 / kControlRef2 (sub_821FA290).
+  be<uint16_t> unk_006;
+  be<uint16_t> facing;
+  uint8_t unk_00A[0x4C - 0x0A];
   be<uint32_t> params;  // +0x4C: guest address of the robot's parameters (ChargeParams inside)
-  uint8_t unk_050[0xA0 - 0x50];
+  uint8_t unk_050[0x90 - 0x50];
+  uint8_t unk_090;  // +0x90: picks among the spread parameters
+  uint8_t unk_091;
+  uint8_t unk_092;  // +0x92: picks among the y_spread parameters (third rate set)
+  uint8_t unk_093;  // +0x93: like unk_090, third rate set
+  uint8_t unk_094[0xA0 - 0x94];
   RobotInput input;  // +0xA0
-  uint8_t unk_0FC[0x110 - 0xFC];
   be<uint16_t> movement_state;  // +0x110: decides when a button latches the direction
-  uint8_t unk_112[0x190 - 0x112];
+  be<uint16_t> movement_substate;  // +0x112
+  uint8_t unk_114[0x190 - 0x114];
   be<uint32_t> movement_flags;  // +0x190: low 6 bits set select the second ChargeParams set
   uint8_t unk_194[0x1BE - 0x194];
   be<uint16_t> unk_1BE;  // +0x1BE: nonzero selects kChargeFixedA
   uint8_t unk_1C0[2];
   be<uint16_t> unk_1C2;  // +0x1C2: signed; picks the quarter or fixed rates
 };
+static_assert(offsetof(RobotControl, facing) == 0x08);
+static_assert(offsetof(RobotControl, unk_093) == 0x93);
+static_assert(offsetof(RobotControl, movement_substate) == 0x112);
+static_assert(offsetof(RobotInput, unk_0F) == 0x0F);
+// Past the control block (RobotControl offsets): a float the movement code
+// scales by (x0.7 below 70, rising to x1.0 at 100), and two u16s it measures
+// against unk_006 / facing (meaning not confirmed).
+inline constexpr uint32_t kControlScale = 4464;
+inline constexpr uint32_t kControlRef1 = 4488;
+inline constexpr uint32_t kControlRef2 = 4490;
 static_assert(offsetof(RobotControl, mode) == 0x01);
 static_assert(offsetof(RobotControl, params) == 0x4C);
 static_assert(offsetof(RobotControl, input) == 0xA0);
