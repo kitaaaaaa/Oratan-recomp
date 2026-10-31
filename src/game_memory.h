@@ -381,6 +381,24 @@ static_assert(offsetof(RobotInput, unk_0F) == 0x0F);
 inline constexpr uint32_t kControlScale = 4464;
 inline constexpr uint32_t kControlRef1 = 4488;
 inline constexpr uint32_t kControlRef2 = 4490;
+// Movement fields (RobotControl offsets, sub_821F6A10). Velocity along a
+// 16-bit angle a is (-A(a), B(a)) times the speed, A = sub_822A7558 and
+// B = sub_822A75A0; in the default state RobotInput::sum_x pushes along the
+// facing and sum_y across it.
+inline constexpr uint32_t kControlMoveAngle = 16;   // u16, added to the facing in state 2
+inline constexpr uint32_t kControlPosition = 24;    // BeVec3 (= Robot::position)
+inline constexpr uint32_t kControlFreeze = 156;     // u16: while set, no velocity
+inline constexpr uint32_t kControlRunUp = 338;      // u16: counts some states up; speed 0 after 38
+inline constexpr uint32_t kControlSpeed = 372;      // float: this tick's speed
+inline constexpr uint32_t kControlVelocity = 380;   // float x2 at +380 and +388
+inline constexpr uint32_t kControlWarpFrom = 3328;  // BeVec3: where a warp ends if there's no ground
+inline constexpr uint32_t kControlWarpTo = 3340;    // BeVec3: where a warp eases toward
+inline constexpr uint32_t kControlWarp = 3354;      // u16 countdown from 60
+static_assert(0x6C + kControlPosition == offsetof(Robot, position));  // control block at Robot +0x6C
+// be<uint32_t> in Game: the guest address of the robot being updated's data
+// (speed multipliers at +1448/+1452/+1460, run-up limits at +1476-1484,
+// fixed pushes at +3880/+3884). sub_821F8168 sets it each tick.
+inline constexpr uint32_t kGameRobotData = 38508;
 static_assert(offsetof(RobotControl, mode) == 0x01);
 static_assert(offsetof(RobotControl, params) == 0x4C);
 static_assert(offsetof(RobotControl, input) == 0xA0);

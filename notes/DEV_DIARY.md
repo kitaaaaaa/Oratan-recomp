@@ -520,6 +520,36 @@ memory. Checked with `sub_821FB390`'s call check (it compares against the origin
 end to end 0 drifting ticks; a planted bug (easing by 255) gave 792 mismatches. With this,
 everything from controller to the robot's input fields is rewritten except the CPU's steps.
 
+**A robot's tick and its state table** (2026-10-31). `sub_821FC260` is a robot's control step:
+by `RobotControl::mode` it runs the input step `sub_821EC830` (which calls `sub_821FB390`) and
+then `sub_821F8168`, the per-tick driver. The driver sets `Game` +38508 to the robot's data,
+runs some subsystems, then calls the movement state's handler from a 32-entry table at
+0x82027C80 (12 bytes each: handler, two words), then the motion function (`sub_821F6A10`,
+or `sub_821F75E8` while Game +0x6164 is set), and more. Which input fields each handler reads:
+state 0 (`sub_821EE610`, 1,185 instructions) nearly all of them (buttons, fired flags, latched
+class, extra button, angle, spread, y_spread), so it is the free state that starts moves;
+states 2, 12, 15, 25-28 a few (mostly spread); several small states none.
+
+**`sub_821F6A10`, moving the robot** (2026-10-31, `robot_motion.cpp`). While the countdown at
+control +3354 runs, the robot's position eases from one saved point toward another over 60 ticks
+with ground checks and the movement state resets (a warp back, presumably). Otherwise it builds
+the speed (+372) from multipliers in the robot's data (+1448/+1452/+1460), timers, a table for
+action 15, and the scale value (+4464), which also caps it, then adds a velocity (+380, +388)
+by movement state: along the facing, along the movement angle (+16), facing + angle (state 2),
+fixed amounts from the robot's data (+3880, +3884), nothing (states 0 sub 11-16, 24-28, while
+frozen), or, by default, from the lever sums. The arithmetic settles what those are: velocity
+along angle a is (-A(a), B(a)) times the speed (A, B = the two angle functions), and the
+default case adds sum_x times the facing's direction and sum_y times the one across it, so
+**sum_x is forward / back and sum_y sideways**. The +338 counter runs some states up and drops
+the speed to 0 after 38 ticks or when the scale value is below the robot's limits (+1476-1484).
+Callees (ground and warp helpers, the angle functions, sub_821E85F0, sub_821F6568) stay
+original, called with the original's registers, stack slots and frame.
+
+Checked call by call on `feiyen_training.otr`: the first build drifted from tick 2600 and the
+check named the field at once (position x, state 19 substate 0): a condition read as `>= 2`
+where the original branches on `< 2`. Fixed: over 40,000 calls, 0 mismatches, end to end 0
+drifting ticks. A planted sign flip in the sideways term gave 503 mismatches.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
