@@ -55,6 +55,46 @@ inline constexpr uint32_t kCommandCapture = 0x839C28AC;
 inline constexpr uint32_t kInputSource = 0x829B2DE0;
 // be<int32_t>: stage number of the next fight (the Training stage select stores it here).
 inline constexpr uint32_t kNextStage = 0x83876DF4;
+// be<uint32_t>[17]: guest pointers handed out by sub_822AC098(i): 0 = Game
+// (kGamePointer), 16 = an object whose +0x181DD0 / +0x181EC0 holds the
+// per-side direction tables read on battle step 0x13 (sub_82200430/498).
+inline constexpr uint32_t kObjectTable = kGamePointer;
+// be<int32_t>: below 0 means those tables are not in use; be<uint32_t> at
+// kScriptedIndex: the current entry.
+inline constexpr uint32_t kScriptedActive = 0x8386E9CC;
+inline constexpr uint32_t kScriptedIndex = 0x8386E9D8;
+// DirectionLookup x2: turn a robot's packed lever word (RobotInput::held) into
+// a direction code, the first lever's in the high byte and the second's in
+// the low byte (sub_821FB390, sub_82212A98, sub_821CBB28).
+inline constexpr uint32_t kDirectionLookupFirst = 0x8203ADA4;
+inline constexpr uint32_t kDirectionLookupSecond = 0x8203ADD4;
+// ChargeTable: the charge parameters sub_821F9DE0 uses this tick, pointed at
+// one of the robot's ChargeParams sets (or a fixed one) by sub_821FB390.
+inline constexpr uint32_t kChargeTable = 0x8386E948;
+// be<int32_t>[8] each: quarter-rate copies of the robot's normal set, used
+// while RobotControl::action is 0 and unk_1C2 is above 0.
+inline constexpr uint32_t kChargeQuarterDrop = 0x8386E958;
+inline constexpr uint32_t kChargeQuarterDecay = 0x8386E978;
+inline constexpr uint32_t kChargeQuarterBuild = 0x8386E998;
+// be<int32_t>[8] each: fixed rates the three tables are set to in some states
+// (all three pointers get the same table).
+inline constexpr uint32_t kChargeFixedA = 0x8289CD14;  // RobotControl::unk_1BE set
+inline constexpr uint32_t kChargeFixedB = 0x8289CD34;  // action 4/11/12, unk_1C2 negative
+inline constexpr uint32_t kChargeFixedC = 0x8289CD54;  // action 11, unk_1C2 above 0
+// AiControl per side: the CPU player's state (sub_82212A98).
+inline constexpr uint32_t kAiControl1 = 0x83876CC8;
+inline constexpr uint32_t kAiControl2 = 0x83876BA8;
+// The game's random numbers: sub_822A7460 counts calls in kRandomCalls
+// (be<uint32_t>) and returns 15 bits from sub_821721E8(1), a Mersenne Twister
+// (sub_8215C540) whose state is on the heap: entry n of the 16-byte records
+// at *kRandomGenerators holds its address at +4. The state is 624 words plus
+// the index at +2500.
+inline constexpr uint32_t kRandomCalls = 0x839C28E0;
+inline constexpr uint32_t kRandomGenerators = 0x82A3D74C;
+inline constexpr uint32_t kRandomStateSize = 2504;
+// PlaybackInput[2] (144 bytes apart): a third input source a robot reads in
+// RobotControl mode 5 (sub_821CBB28); who fills it isn't known yet.
+inline constexpr uint32_t kPlaybackInput = 0x83865120;
 // be<uint32_t>[22]: guest pointers to stage file names (stage -> "carrier", "duct", ...).
 inline constexpr uint32_t kStageFileNames = 0x8201F530;
 // be<uint32_t>[19]: guest pointers to robot file names (robot -> "dor" ... "tgm").
@@ -227,6 +267,145 @@ static_assert(offsetof(Robot, heap_pointer_0B4) == 0xB4);
 static_assert(offsetof(Robot, heap_pointer_0C8) == 0xC8);
 static_assert(offsetof(Robot, heap_pointer_2D8) == 0x2D8);
 static_assert(offsetof(Robot, bone_table) == 0x4B8);
+
+// A robot's input as its movement code sees it (RobotControl::input, robot
+// +0x10C; sub_821FB390 and the functions it calls). The packed words hold the
+// two levers' channel bits as LeverInput has them: the first lever (left
+// channel) in the low byte, the second (right channel) in the high byte, so
+// 0x0001/0x0002 are the first lever's buttons and 0x0100/0x0200 the second's.
+struct RobotInput {
+  uint8_t unk_00[2];
+  uint8_t direction_class;   // +0x02: `direction` sorted into 0-7 (sub_821F9BC8), 255 = none
+  uint8_t direction_class2;  // +0x03: set together with it
+  uint8_t latched_class;     // +0x04: direction_class copied when a button press meets the state rules
+  uint8_t unk_05;
+  uint8_t both_held_timer;   // +0x06: 255, then counts down, while 0x0002 and 0x0200 are both held
+  // +0x07/+0x08: set to 255 once hold_0100/hold_0001 has counted down to 253
+  // (two ticks into a press), then count down; cleared on release.
+  uint8_t fired_0100;
+  uint8_t fired_0001;
+  uint8_t fired_both;        // +0x09: 255 when hold_0001 and hold_0100 are both above 251
+  uint8_t lockout;           // +0x0A: while set, the charge meters only drain (sub_821F9DE0)
+  // +0x0B: 255, then counts down, while the direction code's two lever signs
+  // are (first < 0, second <= 0) or (0, second < 0), or for a few fixed codes.
+  uint8_t lever_timer;
+  uint8_t unk_0C;            // +0x0C: sub_821F9DE0
+  uint8_t unk_0D;            // +0x0D: minus unk_0C
+  uint8_t unk_0E[2];
+  uint8_t hold_0001;  // +0x10: 255 on press, counts down while held
+  uint8_t hold_0100;  // +0x11
+  uint8_t hold_0002;  // +0x12
+  uint8_t hold_0200;  // +0x13
+  uint8_t hold_extra; // +0x14: the extra channel's 0x20 (command::kExtra0)
+  uint8_t direction_changed;  // +0x15: 0 same as last tick, else 1 or 2
+  uint8_t unk_16[0x1C - 0x16];
+  be<uint16_t> previous_direction;  // +0x1C
+  // +0x1E: direction code: first lever's direction in the high byte, the
+  // second's in the low byte (DirectionLookup); 0xFFFF = none.
+  be<uint16_t> direction;
+  uint8_t unk_20[4];
+  // +0x24: charge meters, per lever and direction: build while held, drain
+  // otherwise, capped at 1536 (sub_821F9DE0).
+  be<uint16_t> charge[2][8];
+  be<uint32_t> held;     // +0x44
+  be<uint32_t> pressed;  // +0x48: held now and not last tick
+  uint8_t unk_4C[0x58 - 0x4C];
+  be<int32_t> unk_58;  // +0x58: sub_821F9DE0 sets it to -1
+};
+static_assert(sizeof(RobotInput) == 0x5C);
+static_assert(offsetof(RobotInput, direction) == 0x1E);
+static_assert(offsetof(RobotInput, charge) == 0x24);
+static_assert(offsetof(RobotInput, held) == 0x44);
+static_assert(offsetof(RobotInput, unk_58) == 0x58);
+
+// A robot's control block, at Robot +0x6C (Game +25020 for side 1, +29516
+// for side 2); sub_821FB390 runs on it once per tick.
+struct RobotControl {
+  uint8_t unk_000;
+  // +0x01 (= Robot::cpu_controlled): where the input comes from: 0 the
+  // player's levers, 1 or 4 the CPU (AiControl), 5 PlaybackInput, 8 none.
+  uint8_t mode;
+  uint8_t action;  // +0x02: compared with 0, 4, 11, 12 when choosing charge rates
+  uint8_t unk_003[0x4C - 0x03];
+  be<uint32_t> params;  // +0x4C: guest address of the robot's parameters (ChargeParams inside)
+  uint8_t unk_050[0xA0 - 0x50];
+  RobotInput input;  // +0xA0
+  uint8_t unk_0FC[0x110 - 0xFC];
+  be<uint16_t> movement_state;  // +0x110: decides when a button latches the direction
+  uint8_t unk_112[0x190 - 0x112];
+  be<uint32_t> movement_flags;  // +0x190: low 6 bits set select the second ChargeParams set
+  uint8_t unk_194[0x1BE - 0x194];
+  be<uint16_t> unk_1BE;  // +0x1BE: nonzero selects kChargeFixedA
+  uint8_t unk_1C0[2];
+  be<uint16_t> unk_1C2;  // +0x1C2: signed; picks the quarter or fixed rates
+};
+static_assert(offsetof(RobotControl, mode) == 0x01);
+static_assert(offsetof(RobotControl, params) == 0x4C);
+static_assert(offsetof(RobotControl, input) == 0xA0);
+static_assert(offsetof(RobotControl, movement_state) == 0x110);
+static_assert(offsetof(RobotControl, movement_flags) == 0x190);
+static_assert(offsetof(RobotControl, unk_1BE) == 0x1BE);
+static_assert(offsetof(RobotControl, unk_1C2) == 0x1C2);
+inline constexpr uint32_t kRobotControlOffset = 0x6C;
+
+// One set of charge rates in a robot's parameters (at params +120, +220 and
+// +320: normal, movement_flags set, and while Game +0x6164 is set).
+struct ChargeParams {
+  be<int32_t> build[8];  // added to the held direction's meter
+  be<int32_t> decay[8];  // taken from the others
+  be<int32_t> drop[8];   // taken from meter (d - 4) & 7 while direction d is held
+  be<int32_t> threshold; // after a build, meters below it drop to 0
+};
+static_assert(sizeof(ChargeParams) == 100);
+
+// kChargeTable: what sub_821F9DE0 reads this tick (guest addresses of
+// be<int32_t>[8] tables).
+struct ChargeTable {
+  be<int32_t> threshold;
+  be<uint32_t> drop;
+  be<uint32_t> decay;
+  be<uint32_t> build;
+};
+static_assert(sizeof(ChargeTable) == 16);
+
+// kDirectionLookupFirst/Second: a lever's 4 direction bits (taken at `shift`
+// from a packed word) to its byte of the direction code.
+struct DirectionLookup {
+  be<uint16_t> code[16];
+  be<uint32_t> shift;
+};
+static_assert(offsetof(DirectionLookup, shift) == 32);
+
+// The CPU player's state for one robot (kAiControl1/2, sub_82212A98). Its
+// steps (eight functions, still original code) fill `held` like a player's
+// levers; the rest is their bookkeeping, meaning mostly not known.
+struct AiControl {
+  be<uint32_t> held;    // +0x00: packed like RobotInput::held
+  uint8_t hold_extra;   // +0x04
+  uint8_t unk_05[0x14 - 0x05];
+  be<int32_t> unk_14;    // +0x14
+  be<int32_t> unk_18;    // +0x18
+  be<int32_t> unk_1C;    // +0x1C
+  uint8_t unk_20[0x30 - 0x20];
+  be<int32_t> plan;      // +0x30: compared before and after a step to count repeats
+  be<int32_t> unk_34;    // +0x34
+  be<int32_t> timer;     // +0x38: below 0 = idle, else counts up to `duration`
+  be<int32_t> duration;  // +0x3C
+  uint8_t unk_40[0x44 - 0x40];
+  be<int32_t> unk_44;    // +0x44
+  uint8_t unk_48[0x6C - 0x48];
+  be<int32_t> repeats;   // +0x6C: ticks `plan` stayed the same
+};
+static_assert(offsetof(AiControl, timer) == 0x38);
+static_assert(offsetof(AiControl, repeats) == 0x6C);
+
+// One of kPlaybackInput's two records (144 bytes apart).
+struct PlaybackInput {
+  uint8_t unk_00[8];
+  be<uint32_t> held;      // +0x08
+  be<uint32_t> previous;  // +0x0C
+};
+inline constexpr uint32_t kPlaybackInputStride = 144;
 
 // One input channel of a side (LeverInput): now, at the previous tick, and
 // pressed this tick (now and not previous).

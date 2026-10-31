@@ -32,6 +32,7 @@ set(ORATAN_SOURCES
     src/decomp/game_flow.cpp
     src/decomp/menu.cpp
     src/decomp/robot_control.cpp
+    src/decomp/robot_input.cpp
     src/decomp/robot_loader.cpp
 )
 

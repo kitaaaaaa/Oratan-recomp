@@ -462,6 +462,40 @@ and the check off, both replay with 0 drifting ticks. One robot is enough for th
 set because of the above; the recording, its save state and how to run it are in
 `tests/replays/README.md`.
 
+**How input reaches a robot** (2026-10-30). `Game::robot_commands` is read only by
+`sub_822AE448`, part of the game's own replay recorder for Arcade and Score Attack (the
+`0x822AE…` block: a header tagged "IDNR", then both sides' command words run-length encoded
+into up to 12,000 bytes). The robots read the lever channels instead, through their control
+block (`RobotControl`, robot +0x6C). Found by clearing side 1's channels while fighting during
+a replay: the first drift (tick 2434) was in robot 1's record on the same tick, at the packed
+input words that `sub_821FB390` writes. Gamepad and twin-stick input are the same from there on.
+
+**`sub_821FB390`, a robot's input** (2026-10-31, `robot_input.cpp`). Runs once per robot per
+tick on its `RobotControl`. It packs the side's lever channels into `RobotInput::held` /
+`pressed` (first lever low byte, second high byte) and chooses the direction code: a per-side
+table on battle step 0x13 (`sub_82200430` / `sub_82200498`, object 16 of the `sub_822AC098`
+table), last tick's on 0x14, else by `RobotControl::mode`: the CPU (`sub_82212A98`: eight
+original steps on `AiControl`, which then replaces held / pressed), `PlaybackInput`
+(`sub_821CBB28`), none (mode 8), or the player's levers through two `DirectionLookup` tables.
+It sorts the code into a class 0-7 (`sub_821F9BC8`, a fixed table), derives a sign per lever,
+points `kChargeTable` at one of three `ChargeParams` sets in the robot's parameters (or a fixed
+or quarter-rate one in some states) and runs the charge meters (`sub_821F9DE0`: per lever and
+direction, build while held up to 1536, drain otherwise, a drop on the meter four places round),
+then calls `sub_821FA290` (1,088 instructions, the movement code, still original). Afterwards it
+counts the four lever buttons' and the extra button's hold timers and "fired" flags and copies
+the direction class to `latched_class` when a press meets the movement state's rule. The
+callees are rewritten as helpers; the CPU's steps and `sub_821FA290` are called as the
+original with the original's arguments and frames.
+
+Checked: `sub_821F9BC8` swept over all 65,536 codes (`decomp_verify`), 0 mismatches; a planted
+wrong entry (code 1023) was caught. `sub_821FB390` call by call over `feiyen_training.otr`,
+over 39,000 calls, 0 mismatches; a planted bug in `direction_changed` gave 432 (its first
+planted bug could never change a result, a reminder to plant one the recording exercises).
+End to end with the rewrite active: 0 drifting ticks. The CPU's steps draw random numbers, so
+the check has to restore the generator too: `sub_822A7460` (call counter `kRandomCalls`) takes
+15 bits from a Mersenne Twister whose state is on the heap (`kRandomGenerators`); without it
+the original's draw changed what the rewrite's run saw. Next: `sub_821FA290`.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
