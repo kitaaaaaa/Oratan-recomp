@@ -27,6 +27,12 @@
 // substates set the speed from the robot's data and end like state 19.
 // While +0 is set, the state ends once sub_821DD180 reports it.
 //
+// sub_821E4F88, state 18. It resets a few timers each tick; substate 1
+// waits for sub_821DD180 and +102. Otherwise, after sub_821DD968 picks the
+// next substate (+290) and the move is over, it switches to substates 11-16
+// or 2-10, or to state 21 (+174 set), state 19 (a class at +164 and flag 256),
+// state 12 (+288 == 12) or the free state.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -84,6 +90,8 @@ REX_EXTERN(__imp__sub_821E0160);
 REX_EXTERN(__imp__sub_821C01D8);
 REX_EXTERN(__imp__sub_821F2538);
 REX_EXTERN(__imp__sub_821F1228);
+REX_EXTERN(__imp__sub_821E4F88);
+REX_EXTERN(__imp__sub_821DD2B0);
 REX_EXTERN(__imp__sub_822AC098);
 REX_EXTERN(__imp__sub_821F1BE0);
 REX_EXTERN(__imp__sub_821DFC50);
@@ -1396,6 +1404,348 @@ void VerifyState15(PPCContext& ctx, uint8_t* base) {
       100);
 }
 
+void State18(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 128;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const auto data_h = [&](uint32_t o) {
+    const uint32_t data = *game::GuestPtr<be<uint32_t>>(base, game_address + game::kGameRobotData);
+    return uint32_t(*game::GuestPtr<be<uint16_t>>(base, data + o));
+  };
+  const auto data_float = [&](uint32_t o) {
+    const uint32_t data = *game::GuestPtr<be<uint32_t>>(base, game_address + game::kGameRobotData);
+    return double(std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, data + o))));
+  };
+  const uint32_t zero = *game::GuestPtr<be<uint32_t>>(base, 0x8200095C);
+  const auto set_314_316 = [&](uint32_t v) {
+    c.SetH(316, v);
+    c.SetH(314, v);
+  };
+  const auto ask_dd968 = [&]() {
+    k.k.r6.u64 = 0;
+    k.k.r5.s64 = -1;
+    const uint32_t r = k.Call(__imp__sub_821DD968, c.a, 1);
+    if (int32_t(r) != 0) c.SetH(290, r);
+  };
+
+  const uint32_t sub = c.H(274);
+  c.SetH(278, 0);
+  c.SetW(116, 0);
+  c.SetB(337, 0);
+  set_314_316(3);
+  c.SetH(444, uint32_t(-3));
+  c.SetH(442, uint32_t(-3));
+  c.SetH(10, 0);
+  c.SetH(6, 0);
+
+  if (sub == 1) {
+    c.SetB(576, 19);
+    c.SetW(584, (c.H(4) & 2) != 0 ? 1 : 0);
+    if (c.S16(102) > 0 && k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      c.SetH(274, 0);
+      c.SetH(292, 0);
+      c.SetB(286, 2);
+      c.SetH(288, 0);
+    }
+    return;
+  }
+
+  const bool mode2 = c.B(577) == 2;
+  const uint32_t next_284 = mode2 ? 12 : 10;
+  if (mode2) {
+    if (c.B(4495) != 0) set_314_316(uint32_t(int16_t((Control{base, game_address}.W(588) & 3) + 3)));
+    c.SetB(576, (c.H(4) & 4) != 0 ? 29 : 28);
+    c.SetW(584, (c.H(4) & 2) != 0 ? 3 : 2);
+    c.SetH(438, 0);
+    c.SetB(441, 0);
+    if (c.H(276) < 12) ask_dd968();
+    if (c.H(276) != 0) c.SetH(276, c.H(276) - 1);
+    if (c.B(181) != 0 && c.H(276) != 0) c.SetH(276, c.H(276) - 1);
+    if (c.B(336) != 2) c.SetB(336, 2);
+    if (c.B(172) == 255) {
+      c.SetH(288, 12);
+      c.SetH(290, 0);
+    }
+    if (c.H(276) != 0 || c.B(3) == 2) {
+      c.SetW(372, zero);
+      return;
+    }
+    c.SetB(4495, 0);
+  } else {
+    c.SetB(440, 0);
+    c.SetH(438, 0);
+    c.SetB(441, 0);
+    ask_dd968();
+    if (k.Call(__imp__sub_821DD180, c.a, 1) == 0) {
+      c.SetW(372, zero);
+      return;
+    }
+    set_314_316(data_h(3878));
+  }
+
+  const uint32_t next = c.H(290);
+  if (next >= 11 && next <= 16) {
+    c.SetH(274, next);
+    for (uint32_t o : {272u, 288u, 290u, 294u, 292u, 598u, 594u, 12u, 4492u, 592u}) c.SetH(o, 0);
+    c.SetB(286, 0);
+    const uint32_t flag = c.B(148) != 0 ? 1 : 0;
+    c.SetH(338, flag);
+    c.SetW(584, 2);
+    c.SetB(284, next_284);
+    set_314_316(data_h(3874));
+    c.SetB(336, flag != 0 ? 14 : 18);
+    c.SetW(372, zero);
+  } else if (next >= 2 && next <= 10) {
+    c.SetH(274, next);
+    for (uint32_t o : {272u, 288u, 290u, 294u, 292u, 598u, 594u, 12u, 4492u, 296u, 438u}) c.SetH(o, 0);
+    c.SetB(286, 0);
+    c.SetW(584, 2);
+    c.SetW(372, zero);
+    c.SetB(284, next_284);
+    c.SetB(440, 0);
+    set_314_316(data_h(3874));
+    c.SetB(336, 18);
+  } else if (c.B(174) != 255) {
+    // To state 21; whether +174 is 0 picks the sign of +64 and the values 0 / 1.
+    const uint8_t b174 = c.B(174);
+    for (uint32_t o : {288u, 290u, 274u, 12u, 598u, 292u}) c.SetH(o, 0);
+    c.SetH(272, 21);
+    c.SetB(286, 0);
+    if (b174 == 0) {
+      c.SetW(588, 0);
+      c.SetW(584, 0);
+      c.SetW(300, 2);
+      SetFloat(c, 64, data_float(3644));
+    } else {
+      c.SetW(588, 1);
+      c.SetW(584, 1);
+      c.SetW(300, 4);
+      SetFloat(c, 64, -data_float(3644));
+    }
+    k.Call(__imp__sub_821DD230, c.a, 0);
+    k.Call(__imp__sub_821C01D8);  // r3 as sub_821DD230 left it
+    k.Call(__imp__sub_821E0160, c.a, 2);
+    c.SetW(372, zero);
+  } else if (c.B(164) != 255 && (c.W(400) & 256) != 0) {
+    // To state 19 with the move for the class at +164.
+    const uint8_t cls = c.B(164);
+    c.SetH(290, 0);
+    c.SetH(288, 0);
+    c.SetH(272, 19);
+    c.SetH(274, 0);
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, cls)))));
+    c.SetW(588, uint32_t(int32_t(int16_t(Table(base, kMoveTable1, cls)))));
+    c.SetH(12, Table(base, kMoveTable2, cls));
+    c.SetH(598, 0);
+    c.SetH(292, 0);
+    c.SetB(286, 0);
+    c.SetH(20, Table(base, kMoveTable3, cls));
+    k.Call(__imp__sub_821DD230, c.a, 8);
+    c.SetH(14, 0);
+    c.SetH(18, 0);
+    c.SetB(336, 18);
+    c.SetH(16, c.H(game::kControlRef2) + c.H(20));
+    k.Call(__imp__sub_821E0160, c.a, 2);
+    c.SetW(372, zero);
+  } else if (mode2) {
+    const uint32_t s288 = c.H(288);
+    c.SetH(292, 0);
+    if (s288 == 12) {
+      c.SetH(272, 12);
+      for (uint32_t o : {288u, 290u, 274u, 12u, 598u, 594u}) c.SetH(o, 0);
+      c.SetB(286, 0);
+      c.SetW(300, 0);
+      c.SetB(0, 0);
+      c.SetW(584, 2);
+      k.Call(__imp__sub_821E0160, c.a, 5);
+      c.SetW(372, zero);
+      c.SetB(336, 18);
+      set_314_316(data_h(3874));
+    } else {
+      c.SetB(286, 3);
+      c.SetB(336, 18);
+      c.SetW(372, zero);
+    }
+  } else {
+    const uint32_t s288 = c.H(288);
+    for (uint32_t o : {288u, 290u, 274u, 292u, 12u, 598u, 594u}) c.SetH(o, 0);
+    if (s288 == 12) {
+      c.SetB(286, 0);
+      c.SetW(300, 0);
+      c.SetH(272, 12);
+      c.SetB(0, 0);
+      c.SetW(584, 2);
+      k.Call(__imp__sub_821E0160, c.a, 5);
+      c.SetB(336, 18);
+      c.SetW(372, zero);
+      set_314_316(data_h(3874));
+    } else {
+      // Back to the free state.
+      for (uint32_t o : {272u, 102u, 294u, 104u, 4492u}) c.SetH(o, 0);
+      c.SetB(576, 0);
+      c.SetB(577, 0);
+      c.SetW(584, 0);
+      c.SetW(112, 0);
+      c.SetB(336, 18);
+      c.SetW(372, zero);
+    }
+  }
+}
+
+void VerifyState18(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821E4F88", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821E4F88(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        State18(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} mode {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(274), c.B(577), c.B(2));
+      },
+      600);
+}
+
+constexpr uint32_t kSubstateKinds = 0x82027F10;  // u32 per substate: 2, 5, 8 or other
+
+// sub_821DD968(control, r4, mode, r6): the next substate, or 0. sub_821DD2B0
+// fills a record on the stack (frame +80): +0 a substate chosen already,
+// +4 passed on to sub_82257F50, +8 / +12 two signed values, +16..+36 six
+// flags that pick a branch, +40 / +44 / +48 three parameter records with
+// hold limits. Each branch tries up to three substates, each one only if
+// sub_82257F50(control, weapon, variant, +4) agrees. A substate whose kind
+// (kSubstateKinds) is 2, 5 or 8 is refused while +460, +458 or +462 runs.
+uint32_t ChooseSubstate(const Control& c, Caller& k, uint8_t* base, uint32_t r4, int32_t mode, uint32_t r6) {
+  const uint32_t frame = k.k.r1.u32 - 192;
+  k.k.r1.u64 = frame;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  k.k.r7.u64 = frame + 80;
+  k.k.r6.u64 = r6;
+  k.k.r5.s64 = mode;
+  k.Call(__imp__sub_821DD2B0, c.a, r4);
+  const Control record{base, frame + 80};
+  const auto rw = [&](uint32_t o) { return int32_t(record.W(o)); };
+  const int32_t flag36 = rw(36), flag32 = rw(32), flag28 = rw(28);
+  int32_t a, b;  // the +8 and +12 values, both 0 while the side's Game flag is set
+  if ((c.a == game_address + kControl2 && g.B(53014) != 0) ||
+      (c.a == game_address + 25020 && g.B(53013) != 0)) {
+    a = 0;
+    b = 0;
+  } else {
+    b = c.B(2) == 14 && (flag28 != 0 || flag32 != 0 || flag36 != 0) ? 0 : rw(12);
+    a = rw(8);
+  }
+  const bool busy = int32_t(g.W(kGameBusy)) != 0;
+  const int32_t timer = c.S16(438), t102 = c.S16(102);
+  // Whether the hold timers allow a substate, by the record at +40 / +44 / +48.
+  const auto allowed = [&](uint32_t record_offset, uint32_t hold, uint32_t limit102) {
+    const Control p{base, record.W(record_offset)};
+    if (mode < 0) return true;
+    if (mode == 0) return timer < int32_t(p.H(hold));
+    if (mode == 1) return timer < int32_t(p.H(hold)) && t102 < int32_t(p.H(limit102));
+    return false;
+  };
+  const auto try_weapon = [&](uint32_t weapon, uint32_t variant, uint32_t substate) {
+    k.k.r6.u64 = record.W(4);
+    k.k.r5.u64 = variant;
+    return int32_t(k.Call(__imp__sub_82257F50, c.a, weapon)) != 0 ? substate : 0u;
+  };
+  // A branch with three tries: a > 0 (variant 2), b > 0 (variant 1), both 0 (variant 0).
+  const auto three_tries = [&](uint32_t weapon, uint32_t hold, uint32_t limit102, uint32_t s2, uint32_t s1,
+                               uint32_t s0) -> uint32_t {
+    if (a > 0 && allowed(48, hold, limit102)) return try_weapon(weapon, 2, s2);
+    if (b > 0) return allowed(44, hold, limit102) ? try_weapon(weapon, 1, s1) : 0;
+    if (b != 0 || a != 0) return 0;
+    return allowed(40, hold, limit102) ? try_weapon(weapon, 0, s0) : 0;
+  };
+
+  uint32_t result = record.W(0);
+  if (result == 0) {
+    if (flag36 != 0) {
+      if (a > 0 && allowed(48, 46, 40)) {
+        result = try_weapon(2, 2, 10);
+      } else if (b > 0) {
+        if ((c.H(272) == 1 || c.H(272) == 0) && !busy) result = 16;
+      } else if (b == 0 && a >= 0) {
+        result = 15;
+      }
+    } else if (rw(24) != 0) {
+      result = three_tries(2, 46, 40, 10, 9, 8);
+    } else if (flag32 != 0) {
+      if (a > 0 && allowed(48, 30, 24)) {
+        result = try_weapon(1, 2, 4);
+      } else if (b > 0) {
+        if (!busy) result = 12;
+      } else if (b == 0 && a == 0) {
+        result = 11;
+      }
+    } else if (rw(20) != 0) {
+      result = three_tries(1, 30, 24, 4, 3, 2);
+    } else if (flag28 != 0) {
+      if (a > 0 && allowed(48, 14, 8)) {
+        result = try_weapon(0, 2, 7);
+      } else if (b > 0) {
+        if (!busy) result = 14;
+      } else if (b == 0 && a == 0) {
+        result = 13;
+      }
+    } else if (rw(16) != 0) {
+      result = three_tries(0, 14, 8, 7, 6, 5);
+    }
+  }
+
+  const int32_t kind = int32_t(*game::GuestPtr<be<uint32_t>>(base, kSubstateKinds + result * 4));
+  if (kind == 2) return c.H(460) == 0 ? result : 0;
+  if (kind == 5 && c.H(458) != 0) return 0;
+  if (kind == 8 && c.H(462) != 0) return 0;
+  return result;
+}
+
+void ChooseSubstateHook(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  const uint32_t r = ChooseSubstate(c, k, base, ctx.r4.u32, ctx.r5.s32, ctx.r6.u32);
+  ctx.r3.u64 = r;
+}
+
+void VerifyChooseSubstate(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821DD968", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821DD968(original, base);
+        return int64_t(original.r3.u32);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        ChooseSubstateHook(rewrite, base);
+        return int64_t(rewrite.r3.u32);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} state {} sub {} mode {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(272), c.H(274), ctx.r5.s32);
+      },
+      600);
+}
+
 void VerifyState19(PPCContext& ctx, uint8_t* base) {
   static Verifier* verifier = nullptr;
   const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
@@ -1813,4 +2163,22 @@ REX_HOOK_RAW(sub_821F1228) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState15(ctx, base);
   oratan::decomp::State15(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E4F88) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E4F88(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState18(ctx, base);
+  oratan::decomp::State18(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD968) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD968(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyChooseSubstate(ctx, base);
+  oratan::decomp::ChooseSubstateHook(ctx, base);
 }

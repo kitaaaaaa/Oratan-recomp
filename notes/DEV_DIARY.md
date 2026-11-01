@@ -625,6 +625,19 @@ command 5). Any other command becomes the substate. So states 24-28 are the spec
 Fei-Yen replay never reaches. Checked: 300 calls, 0 mismatches (state 15's verifier reports every
 100 calls, since it runs only a few hundred times); end to end 0 drifting ticks; a planted bug gave 99.
 
+**`sub_821E4F88`, movement state 18** (2026-11-01, `robot_states.cpp`). Resets a few timers each
+tick; substate 1 waits for `sub_821DD180` and +102. Otherwise, once `sub_821DD968` has picked the
+next substate (+290) and the move is over, it switches to substates 11-16 or 2-10, or to state 21
+(+174 set), 19 (a class at +164 and flag 256), 12 (+288 == 12) or the free state. 10,300 calls,
+0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 4,344.
+
+**`sub_821DD968`, choosing the next substate** (2026-11-01, `robot_states.cpp`). `sub_821DD2B0`
+fills a record on the stack; six flags in it pick a branch, each trying up to three substates
+(2-16) that `sub_82257F50(control, weapon 0/1/2, variant)` must allow, within hold limits from three
+parameter records. A result whose kind (table 0x82027F10) is 2, 5 or 8 is refused while +460,
++458 or +462 runs. 80,400 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted
+bug gave 531.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
