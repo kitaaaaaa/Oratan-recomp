@@ -586,8 +586,11 @@ subsystems before the state, clears the name at +348, counts the +102 / +104 tim
 calls the movement state's handler from the table at 0x82027C80 (through the function table, so
 the rewritten handlers run), eases +600 toward +598 by at most 2560 a tick, then the subsystems
 after the state (some twice for side 1, with the flag byte at 0x83858820), the motion function,
-the other countdowns, and copies the next values (+284..+300) into place. Dordray (0) has a fall
-for his +48 value, Specineff (10) the +452 countdown with its sounds. The callees are called by
+the other countdowns, and copies the next values (+284..+300) into place. Dordray (0): the
+size scale at +48 (1.0 normal, up to 3.0) with its +450 timer, which fits Giant Mode.
+Specineff (10): the Death Mode countdown at +452, with the sounds SDE_spe_hatsudou, SDE_spe_count_01
+(every 50 ticks) and SDE_spe_death, which sets health (+80) to 0 at the end. The sound helper
+`sub_821A5C20` builds a request {2, id, name} from the sound name tables. The callees are called by
 the names the original calls, so the hooked rewrites (motion, states 0 and 19) run inside it too.
 Checked on `feiyen_training.otr`: 40,200 calls, 0 mismatches, first try; end to end 0 drifting
 ticks (twice). A planted bug (the 2560 limit as 2559) gave 3 mismatches: the limit is rarely
@@ -595,6 +598,16 @@ reached, but it was caught. With the call check on, the replay itself drifts fro
 (game state only, the same 10,351 ticks with and without the planted bug): checking runs a
 robot's whole tick three times, and what the callees change outside the compared memory is not
 put back. That is a limit of the check, not of the rewrite.
+
+**`sub_821E0308`, weapon gauges and range flags** (2026-11-01,
+`robot_weapon_gauges_and_ranges.cpp`). Each tick: the three weapon counters (+408, +404, +412)
+drop toward 0 and are capped at the robot's maximums (+3508..+3512); Game +0xCF00 holds them at
+the maximum. The +400 flags get two bits per weapon from the target distance (+4464) against the
+weapon's near / far / keep limits and angle limits (two parameter sets, chosen by Game +24932),
+plus 128 / 64 from the angle between the robots and 256 from +416. The gauges and +416 are also
+written as percentages ((max - counter) * 100 / max). Checked on `feiyen_training.otr`: 120,600
+calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug (x99 instead of x100)
+mismatched on every call.
 
 ## 8. Replays
 

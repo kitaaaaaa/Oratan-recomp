@@ -11,23 +11,30 @@
 // latched class. Most of the control block fields it touches are not named
 // yet, so they are written by offset here.
 //
-// sub_821F2538, state 19: substate 0 hands over to sub_821F1BE0. Otherwise
-// it sets the speed (+372) from the robot's data by substate group (2-4,
-// 5-7, others; +278 == 1 picks the second set, substates 11-16 their own
-// values and timers +568 / +576), may scale it by the +612 / +102 timers,
-// sets the +337 / +4494 window flags from the robot's parameter tables, and
-// when sub_821DD180 says the move is over, ends it back to state 0 (+312 from
-// the parameters), to state 12 substate 5, or to another substate. Robots 5
-// (Bal-Keros), 15 (Ajim) and 17 (Bradtos) have extra cases.
+// sub_821F2538, state 19: substate 0 hands over to sub_821F1BE0. Other
+// substates set the speed (+372) from the robot's data (by substate group
+// 2-4, 5-7 or the rest; +278 == 1 and substates 11-16 use other values), set
+// the +337 / +4494 flags from timer windows in the robot's parameters, and,
+// when sub_821DD180 reports the move finished, return to state 0, go to
+// state 12 substate 5, or switch substate. Robots 5 (Bal-Keros), 15 (Ajim,
+// with the SDE_aji_up / SDE_aji_down sounds) and 17 (Bradtos) have extra cases.
 //
-// sub_821F8168, the per-tick driver: sets Game +38508 to the robot's data,
-// eases the +4476 point toward the other robot, runs the subsystems before
-// the state, counts the timers +102 / +104 / +116 / +448 down, calls the
-// movement state's handler from the table at 0x82027C80, eases +600 toward
-// +598, runs the subsystems after it and the motion function (sub_821F6A10,
-// or sub_821F75E8 while Game +24932 is set), then counts the other timers
-// down and copies the next values (+284..+300) into place. Robots 0
-// (Dordray), 10 (Specineff) and 17 (Bradtos) have extra steps.
+// sub_821F8168, a robot's per-tick driver, in order:
+//   - sets Game +38508 to the robot's data and moves the +4476 point halfway
+//     toward the other robot (after 18 ticks of +338; before that it copies
+//     the other robot's position);
+//   - runs the steps before the state (weapon gauges, sub_821E9900, ...),
+//     ends the +102 / +104 timers and counts +116 / +448 down;
+//   - calls the movement state's handler from the table at 0x82027C80;
+//   - turns +600 toward +598 by at most 2560 a tick;
+//   - runs the steps after the state and the motion function (sub_821F6A10,
+//     or sub_821F75E8 while Game +24932 is set);
+//   - counts the other timers down and copies the next values (+284..+300)
+//     into place.
+// Robot extras: Dordray's (0) size scale at +48 (1.0 = normal) with its
+// +450 timer; Specineff's (10) Death Mode countdown at +452 with its sounds,
+// which sets health (+80) to 0 at the end; Bradtos (17) runs +102 twice as
+// fast at half health (+88 is the maximum).
 //
 // Every callee runs as the original code. The original passes some of them
 // the registers the previous call left (for example sub_821E0160 right after
@@ -769,7 +776,7 @@ void VerifyCall(PPCContext& ctx, uint8_t* base) {
 }
 
 constexpr uint32_t kSideFlags = 0x83869E18;  // u32 per side, +16 set by state 19
-constexpr uint32_t kState19Sound1 = 0x82028104, kState19Sound2 = 0x820280F8;
+constexpr uint32_t kSoundAjiDown = 0x82028104, kSoundAjiUp = 0x820280F8;  // sound names
 constexpr uint32_t kState19Speed = 0x82010844;          // robot 5's speed in substates 11-16
 constexpr uint32_t kState19NextSubstate = 0x82027FA0;   // u32, by sub_821DF440's result
 
@@ -920,7 +927,7 @@ void State19(PPCContext& ctx, uint8_t* base) {
       if (k.Call(__imp__sub_821DD180, c.a, 1) == 0) return;
       if (ajim_sound() && c.H(454) != 0) {
         c.SetH(454, c.H(454) - 1);
-        sound(0x911A9, kState19Sound1);
+        sound(0x911A9, kSoundAjiDown);
         return;
       }
       const uint32_t s = c.H(274);
@@ -1050,7 +1057,7 @@ void State19(PPCContext& ctx, uint8_t* base) {
     if (mode == 0) {
       if (ajim_sound() && c.H(456) <= 480) {
         c.SetH(456, c.H(456) == 0 ? 480 : 960);
-        sound(0x811A9, kState19Sound2);
+        sound(0x811A9, kSoundAjiUp);
       }
       finish();
     } else if (mode == 2) {
@@ -1131,13 +1138,17 @@ void VerifyState19(PPCContext& ctx, uint8_t* base) {
 }
 
 constexpr uint32_t kStateTable = 0x82027C80;  // 32 x {handler, two words}
-constexpr uint32_t kDriverFlag = 0x83858820;  // u8, set around side 1's second pass
-constexpr uint32_t kZeroFloat = 0x8200095C, kFallThreshold = 0x82000958;
-constexpr uint32_t kEaseFactor = 0x82001590;                 // double
-constexpr uint32_t kFallLimit = 0x820224B8, kFallStep = 0x82017340;  // doubles
-constexpr uint32_t kFallScale = 0x820282F8, kFallBase = 0x82001388;  // doubles
-constexpr uint32_t kDriverSoundAmount = 0x820176C8;          // float
-constexpr uint32_t kDriverSound1 = 0x82028300, kDriverSound2 = 0x820282E4, kDriverSound3 = 0x820282D0;
+constexpr uint32_t kDriverFlag = 0x83858820;  // u8, set while side 1 runs an extra pass
+constexpr uint32_t kZeroFloat = 0x8200095C;
+constexpr uint32_t kHalf = 0x82001590;  // double 0.5
+// Dordray's size scale: normal 1.0 (float); with +450 at 0 it shrinks by 0.1
+// while above 1.1; in the last 30 ticks of +450 it is 1 + +450 / 15 (doubles).
+constexpr uint32_t kNormalScale = 0x82000958, kShrinkAbove = 0x820224B8, kShrinkStep = 0x82017340;
+constexpr uint32_t kScalePerTick = 0x820282F8, kScaleBase = 0x82001388;
+constexpr uint32_t kCountAmount = 0x820176C8;  // float 0.3, passed to sub_8214F638
+// Specineff's Death Mode sounds (names): start, end, the count every 50 ticks.
+constexpr uint32_t kSoundDeathModeStart = 0x82028300, kSoundDeathModeEnd = 0x820282E4;
+constexpr uint32_t kSoundDeathModeCount = 0x820282D0;
 
 double GuestFloat(const uint8_t* base, uint32_t address) {
   return double(std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, address))));
@@ -1186,11 +1197,11 @@ void Driver(PPCContext& ctx, uint8_t* base) {
   k.k.fpscr.disableFlushMode();
   const double other_x = GuestFloat(base, other + 24);
   if (c.H(338) > 18) {
-    const double ease = GuestDouble(base, kEaseFactor);
+    const double half = GuestDouble(base, kHalf);
     const double y = GuestFloat(base, c.a + 4480), z = GuestFloat(base, c.a + 4484);
-    SetFloat(c, 4476, double(float(double(float(other_x + GuestFloat(base, c.a + 4476))) * ease)));
-    SetFloat(c, 4480, double(float(double(float(GuestFloat(base, other + 28) + y)) * ease)));
-    SetFloat(c, 4484, double(float(double(float(GuestFloat(base, other + 32) + z)) * ease)));
+    SetFloat(c, 4476, double(float(double(float(other_x + GuestFloat(base, c.a + 4476))) * half)));
+    SetFloat(c, 4480, double(float(double(float(GuestFloat(base, other + 28) + y)) * half)));
+    SetFloat(c, 4484, double(float(double(float(GuestFloat(base, other + 32) + z)) * half)));
   } else {
     SetFloat(c, 4476, other_x);
     SetFloat(c, 4480, GuestFloat(base, other + 32));
@@ -1205,7 +1216,7 @@ void Driver(PPCContext& ctx, uint8_t* base) {
   k.k.r4.u64 = other;
   call(sub_821E9900);
 
-  // Clears the 24-byte name at +348 from an empty string on the stack.
+  // Sets +340 = {2, 0} and copies an empty 24-byte name to +348, through the stack.
   *game::GuestPtr<uint8_t>(base, frame + 104) = 0;
   *game::GuestPtr<be<uint32_t>>(base, frame + 96) = 2;
   *game::GuestPtr<be<uint32_t>>(base, frame + 100) = 0;
@@ -1258,7 +1269,7 @@ void Driver(PPCContext& ctx, uint8_t* base) {
 
   if (robot == 10 && c.H(452) == 0xFFFE) {
     if (c.B(180) == 255) {
-      if (c.B(1) == 0 && k.Call(sub_821F9260) == c.a) sound(0xC1DA9, kDriverSound1, 128);
+      if (c.B(1) == 0 && k.Call(sub_821F9260) == c.a) sound(0xC1DA9, kSoundDeathModeStart, 128);
       c.SetH(452, 680);
     } else if (state != 0 || c.H(274) != 0) {
       c.SetH(452, 0xFFFF);
@@ -1367,10 +1378,10 @@ void Driver(PPCContext& ctx, uint8_t* base) {
 
     const uint32_t robot2 = c.B(2);
     if (robot2 == 0 && c.H(450) == 0) {
-      const double y = GuestFloat(base, c.a + 48), threshold = GuestFloat(base, kFallThreshold);
+      const double y = GuestFloat(base, c.a + 48), threshold = GuestFloat(base, kNormalScale);
       if (y > threshold && c.H(272) != 24) {
-        if (y > GuestDouble(base, kFallLimit)) {
-          SetFloat(c, 48, double(float(y - GuestDouble(base, kFallStep))));
+        if (y > GuestDouble(base, kShrinkAbove)) {
+          SetFloat(c, 48, double(float(y - GuestDouble(base, kShrinkStep))));
         } else {
           SetFloat(c, 48, threshold);
           const uint32_t params = c.W(76);
@@ -1389,7 +1400,7 @@ void Driver(PPCContext& ctx, uint8_t* base) {
       if (robot2 == 0) {
         if (n < 30) {
           const double x = double(int64_t(c.S16(450)));
-          SetFloat(c, 48, double(float(std::fma(x, GuestDouble(base, kFallScale), GuestDouble(base, kFallBase)))));
+          SetFloat(c, 48, double(float(std::fma(x, GuestDouble(base, kScalePerTick), GuestDouble(base, kScaleBase)))));
         }
       } else if (n == 0 && In(robot2, {4, 11, 12})) {
         c.SetH(450, uint32_t(-600));
@@ -1402,13 +1413,13 @@ void Driver(PPCContext& ctx, uint8_t* base) {
       if (n == 0) {
         c.SetH(82, 0);
         c.SetH(80, 0);
-        if (c.B(1) == 0 && int8_t(g.B(24914)) > 0 && k.Call(sub_821F9260) == c.a) sound(0xE1DA9, kDriverSound2, 160);
+        if (c.B(1) == 0 && int8_t(g.B(24914)) > 0 && k.Call(sub_821F9260) == c.a) sound(0xE1DA9, kSoundDeathModeEnd, 160);
       }
       if (c.B(1) == 0 && int8_t(g.B(24914)) > 0 && c.H(452) % 50 == 0 && k.Call(sub_821F9260) == c.a) {
-        k.k.r3.u64 = sound(0xD1DA9, kDriverSound3, 160) ? 1 : 0;
+        k.k.r3.u64 = sound(0xD1DA9, kSoundDeathModeCount, 160) ? 1 : 0;
         k.k.r6.u64 = 4;
         k.k.r5.u64 = 10;
-        k.k.f1.f64 = GuestFloat(base, kDriverSoundAmount);
+        k.k.f1.f64 = GuestFloat(base, kCountAmount);
         k.Call(sub_8214F638);
       }
     }
