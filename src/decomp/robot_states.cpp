@@ -19,6 +19,14 @@
 // state 12 substate 5, or switch substate. Robots 5 (Bal-Keros), 15 (Ajim,
 // with the SDE_aji_up / SDE_aji_down sounds) and 17 (Bradtos) have extra cases.
 //
+// sub_821F1228, state 15. Substate 0 sets the speed and the move from the
+// tables, and may start a special when the command from sub_821DF440 is 8
+// (5 for Dordray's state 28) and the gauge counters are 0: Temjin's surfing
+// ram and the Apharmds' move (state 24), Cypher's transformation (25),
+// Dordray's states 26 / 28; any other command becomes the substate. Other
+// substates set the speed from the robot's data and end like state 19.
+// While +0 is set, the state ends once sub_821DD180 reports it.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -75,6 +83,7 @@ REX_EXTERN(__imp__sub_821DD230);
 REX_EXTERN(__imp__sub_821E0160);
 REX_EXTERN(__imp__sub_821C01D8);
 REX_EXTERN(__imp__sub_821F2538);
+REX_EXTERN(__imp__sub_821F1228);
 REX_EXTERN(__imp__sub_822AC098);
 REX_EXTERN(__imp__sub_821F1BE0);
 REX_EXTERN(__imp__sub_821DFC50);
@@ -1103,6 +1112,290 @@ void State19(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+constexpr uint32_t kSoundTemjinSurf = 0x8201ECE8, kSoundCypherMorph = 0x820280E8;  // sound names
+constexpr uint32_t kState15Speed = 0x8200133C;  // float, substates 11-16
+
+void State15(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 160;
+  const uint32_t frame = k.k.r1.u32;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const uint32_t game_again = k.Call(__imp__sub_822AC098, 0);
+  auto flags = game::GuestPtr<be<uint32_t>>(base, kSideFlags + (c.a != game_again + 25020 ? 4 : 0));
+  *flags = uint32_t(*flags) | 16;
+  const auto data = [&]() { return *game::GuestPtr<be<uint32_t>>(base, game_address + game::kGameRobotData); };
+  const auto zero_float = [&]() { return *game::GuestPtr<be<uint32_t>>(base, 0x8200095C); };
+  const auto negated_3700 = [&]() {
+    SetFloat(c, 64, -double(std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, data() + 3700)))));
+  };
+  const auto sound = [&](uint32_t id, uint32_t table) {
+    k.k.r4.u64 = id;
+    k.k.r5.u64 = table;
+    const uint32_t r = k.Call(__imp__sub_821A5C20, frame + 80);
+    k.Call(__imp__sub_821ED918, c.a, r);
+  };
+  const auto df440 = [&](uint32_t r5, uint32_t r6) {
+    k.k.r6.u64 = r6;
+    k.k.r5.u64 = r5;
+    return int32_t(k.Call(__imp__sub_821DF440, c.a, 1));
+  };
+  // Leaves this state for a special one (24-28).
+  const auto to_special = [&](uint32_t state) {
+    c.SetH(274, 0);
+    c.SetB(286, 0);
+    c.SetH(292, 0);
+    c.SetH(272, state);
+    c.SetH(438, 0);
+    c.SetH(276, 0);
+  };
+  const auto change_substate = [&](uint32_t next) {
+    if (next != c.H(274)) {
+      c.SetH(438, 0);
+      c.SetH(274, next);
+      c.SetH(296, 0);
+      c.SetB(440, c.B(440) + 1);
+      k.Call(__imp__sub_821E01E0, c.a);
+    }
+  };
+  const auto to_state12 = [&]() {
+    c.SetH(272, 12);
+    c.SetH(274, 0);
+    c.SetH(290, 0);
+    c.SetB(286, 1);
+    c.SetB(284, 8);
+    c.SetH(292, 0);
+  };
+
+  const uint8_t flag0 = c.B(0);
+  c.SetW(580, c.W(580) | 0x8000);
+  if (flag0 != 0 && c.H(274) == 0) {
+    c.SetB(576, 18);
+    c.SetB(577, 2);
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      const uint32_t w580 = c.W(580);
+      for (uint32_t o : {272u, 290u, 274u, 292u, 598u, 594u, 12u}) c.SetH(o, 0);
+      c.SetB(286, 0);
+      c.SetW(300, 0);
+      c.SetW(584, 0);
+      c.SetW(580, w580 & ~0x04000000u);
+    }
+    c.SetW(372, zero_float());
+  } else if (c.H(274) == 0) {
+    // Substate 0: the first part of the state, which may start a special.
+    k.k.r4.s64 = c.S16(20);
+    k.Call(__imp__sub_821DD890, data() + 904);
+    const uint32_t r4_after = k.k.r4.u32;  // the original adds the r4 the call left
+    c.SetB(440, 0);
+    c.SetH(438, 0);
+    c.SetB(576, 18);
+    SetFloat(c, 372, k.k.f1.f64);
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, uint32_t(c.S16(306)))))));
+    c.SetH(16, c.H(8) + r4_after);
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      if (c.B(577) == 0) c.SetB(286, 1);
+      c.SetH(292, 0);
+    }
+    const uint32_t limit = *game::GuestPtr<be<uint16_t>>(base, c.W(76) + 3640);
+    if (int32_t(c.W(416)) >= int32_t(limit)) {
+      c.SetW(416, limit);
+      to_state12();
+      c.SetW(300, 4);
+      negated_3700();
+      k.Call(__imp__sub_821E0160, c.a, 5);
+    } else {
+      // A class at +162 (while +188 is 0xFFFF) may pick another move from the tables.
+      const uint8_t cls = c.B(162);
+      bool new_move = false;
+      int32_t move = 0;
+      if (c.H(188) == 0xFFFF && cls != 255 && c.B(577) == 1) {
+        move = int16_t(Table(base, kMoveTable0, cls));
+        const int32_t current = int32_t(c.W(584));
+        new_move = (current == 2 && move != 3) || (current == 3 && move != 2) ||
+                   (current == 0 && move != 1) || (current == 1 && move != 0);
+      }
+      if (new_move) {
+        c.SetW(584, uint32_t(move));
+        c.SetW(588, uint32_t(int32_t(int16_t(Table(base, kMoveTable1, cls)))));
+        c.SetH(12, Table(base, kMoveTable2, cls));
+        c.SetH(306, cls);
+        c.SetH(20, Table(base, kMoveTable3, cls));
+        k.Call(__imp__sub_821DD230, c.a, 64);
+        c.SetH(598, 0);
+        c.SetH(292, 0);
+        c.SetB(284, 4);
+        c.SetH(16, c.H(8) + c.H(20));
+      } else {
+        c.SetB(441, 0);
+        const int32_t command = df440(c.B(2) == 2 ? 1 : 0, 0);
+        if (command != 0) {
+          const uint8_t robot = c.B(2);
+          const bool weapon0 = c.W(588) == 0;
+          const bool gauges_full = c.W(404) == 0 && c.W(408) == 0 && c.W(412) == 0;
+          if (robot == 7 && command == 8 && weapon0 && gauges_full) {
+            to_special(24);  // Temjin's surfing ram
+            c.SetW(64, zero_float());
+            sound(0x3004A9, kSoundTemjinSurf);
+          } else if (In(robot, {4, 11, 12}) && command == 8 && weapon0 && c.W(412) == 0) {
+            to_special(24);  // the Apharmds
+            c.SetW(64, zero_float());
+            c.SetB(3321, c.B(3321) + 1);
+          } else if (robot == 0 && weapon0 && command == 8 && c.W(412) == 0) {
+            to_special(26);  // Dordray
+            c.SetW(300, 4);
+            c.SetW(64, zero_float());
+          } else if (robot == 0 && weapon0 && command == 5 && c.W(404) == 0) {
+            to_special(28);  // Dordray
+            c.SetW(300, 4);
+          } else if (robot == 2 && weapon0 && command == 8 && gauges_full) {
+            to_special(25);  // Cypher's transformation
+            c.SetW(64, zero_float());
+            sound(0x719A9, kSoundCypherMorph);
+          } else {
+            if (robot == 15 && (c.W(588) == 0 || c.W(588) == 3) && (command == 15 || command == 8) &&
+                c.H(454) < 4) {
+              c.SetH(454, c.H(454) + 1);
+              sound(0x811A9, kSoundAjiUp);
+            }
+            const uint32_t h304 = c.H(304);
+            c.SetH(290, 0);
+            c.SetH(274, uint32_t(command));
+            c.SetB(286, 0);
+            c.SetH(292, 0);
+            c.SetH(296, 0);
+            c.SetH(304, h304 | 4);
+            if (command < 11 || command > 16) c.SetB(336, 7);
+          }
+        }
+      }
+    }
+  } else if (c.H(274) >= 11 && c.H(274) <= 16) {
+    c.SetW(372, *game::GuestPtr<be<uint32_t>>(base, kState15Speed));
+    c.SetB(576, 61);
+    c.SetB(568, 31);
+    c.SetB(4494, 255);
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, uint32_t(c.S16(306)))))));
+    c.SetB(337, c.B(577) == 0 ? 3 : 0);
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      const uint8_t mode = c.B(577);
+      if (mode == 0) {
+        c.SetB(286, 1);
+        k.Call(__imp__sub_821E01E0, c.a);
+        c.SetH(292, 0);
+      } else {
+        c.SetW(300, 4);
+        if (mode == 2) {
+          to_state12();
+        } else {
+          c.SetB(286, 2);
+          negated_3700();
+          c.SetH(292, 0);
+        }
+      }
+    }
+  } else {
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, uint32_t(c.S16(306)))))));
+    k.Call(__imp__sub_821DD230, c.a, 128);
+    const uint32_t entry = data() + c.W(588) * 48 + 2788;
+    k.k.r4.u64 = 0x48494A;
+    k.k.r5.u64 = entry;
+    k.Call(__imp__sub_821DFC50);  // r3 as sub_821DD230 left it
+    const uint32_t sub = c.H(274);
+    k.k.r4.s64 = c.S16(20);
+    k.Call(__imp__sub_821DD890, data() + (sub == 5 ? 1244 : sub == 2 ? 1224 : 1264));
+    SetFloat(c, 372, k.k.f1.f64);
+    const uint32_t over = k.Call(__imp__sub_821DD180, c.a, 1);
+    const uint8_t mode = c.B(577);
+    // 0: clear +290 and +292; 1: clear +292; 2: neither.
+    int clear = 2;
+    if (over != 0) {
+      if (mode == 0) {
+        c.SetB(286, 1);
+        k.Call(__imp__sub_821E01E0, c.a);
+        clear = 1;
+      } else if (mode == 2) {
+        c.SetH(274, 0);
+        c.SetH(292, 0);
+        c.SetH(272, 12);
+        c.SetW(300, 4);
+        c.SetB(286, 1);
+        c.SetB(284, 8);
+        clear = 0;
+      } else if (k.Call(__imp__sub_821DF200, c.a) != 0) {
+        clear = 1;
+      } else if (const uint32_t next = c.H(290); next != 0) {
+        if (next != c.H(274)) {
+          c.SetB(440, c.B(440) + 1);
+          c.SetH(438, 0);
+          c.SetH(296, 0);
+        }
+        c.SetH(274, next);
+        clear = 0;
+      } else {
+        c.SetB(286, 2);
+        c.SetW(300, 4);
+        negated_3700();
+        clear = 1;
+      }
+    } else if (mode == 1) {
+      if (c.B(2) == 2 && c.B(440) == 0) {
+        const int32_t r = df440(1, 1);
+        if (r != 0 && int32_t(c.H(290)) != r) c.SetH(290, uint32_t(r));
+      }
+    } else if (mode == 2) {
+      c.SetB(441, 0);
+      if (c.B(2) == 2 && c.B(440) == 0) {
+        const int32_t r = df440(0, 0);
+        if (r >= 2 && r <= 10) {
+          change_substate(uint32_t(r));
+          c.SetB(286, 1);
+          clear = 0;
+        }
+      }
+    }
+    if (clear == 0) c.SetH(290, 0);
+    if (clear <= 1) c.SetH(292, 0);
+    k.Call(__imp__sub_821DF990, c.a, data() + c.W(588) * 48 + 2788);
+  }
+
+  // In substate 0 the levers' turn (+256) turns the facing and +16.
+  if (c.H(274) == 0) {
+    const int32_t turn = int32_t(c.W(256));
+    const uint32_t rate = *game::GuestPtr<be<uint32_t>>(base, c.W(76) + 476);
+    const int32_t step = turn > 0 ? int16_t(rate) : turn < 0 ? int16_t(-int32_t(rate)) : 0;
+    c.SetH(8, c.H(8) + uint32_t(step));
+    c.SetH(16, c.H(16) + uint32_t(step));
+  }
+}
+
+void VerifyState15(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) {
+    verifier = new Verifier("sub_821F1228", base,
+                            {{game_address, 0xD000, "game"}, {kSideFlags, 8, "side flags"}});
+  }
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821F1228(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        State15(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} mode {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(274), c.B(577), c.B(2));
+      },
+      100);
+}
+
 void VerifyState19(PPCContext& ctx, uint8_t* base) {
   static Verifier* verifier = nullptr;
   const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
@@ -1511,4 +1804,13 @@ REX_HOOK_RAW(sub_821F8168) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyDriver(ctx, base);
   oratan::decomp::Driver(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821F1228) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821F1228(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState15(ctx, base);
+  oratan::decomp::State15(ctx, base);
 }

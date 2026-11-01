@@ -609,6 +609,22 @@ written as percentages ((max - counter) * 100 / max). Checked on `feiyen_trainin
 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug (x99 instead of x100)
 mismatched on every call.
 
+**`sub_821FF668`, a robot's camera step** (2026-11-01, `robot_camera.cpp`). Each side has a camera
+record at Game + 192 * side that starts with the 4x4 matrix `Game::camera`; its +86 (yaw) and +84
+follow the robot's facing (+8) and +6. The camera mode at control +336 (set by the movement
+states) picks the step: build the matrix (`sub_821FD6B0`), turn the yaw or the facing toward the
+target angle (+4490) within the limits in the robot's data (+480..+488), aim with half the target
+angles (`sub_821BFF48`), or hand over to three other camera functions. 120,600 calls, 0 mismatches,
+first try; end to end 0 drifting ticks; a planted bug (states 6 / 7 forcing mode 3) gave 2,256.
+
+**`sub_821F1228`, movement state 15** (2026-11-01, `robot_states.cpp`). Substate 0 sets the speed
+and the move from the class tables and reads a command from `sub_821DF440`: command 8 with the
+gauge counters at 0 starts a special, named by the sounds it plays: Temjin's `SDE_tem_surfin`
+(state 24), the Apharmds (24), Cypher's `SDE_cyp_morph` transformation (25), Dordray (26; 28 with
+command 5). Any other command becomes the substate. So states 24-28 are the specials, which the
+Fei-Yen replay never reaches. Checked: 300 calls, 0 mismatches (state 15's verifier reports every
+100 calls, since it runs only a few hundred times); end to end 0 drifting ticks; a planted bug gave 99.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
