@@ -579,6 +579,23 @@ Checked on `feiyen_training.otr`: 4,200 calls, 0 mismatches, first try; end to e
 ticks; a planted bug (speed times 1.01) gave 1,665. Only Fei-Yen's paths ran, so the robot 5,
 15 and 17 cases are not covered by the recording.
 
+**`sub_821F8168`, the per-tick driver** (2026-11-01, `robot_states.cpp`). Sets Game +38508 to
+the robot's data, eases the +4476 point toward the other robot (after 18 ticks of +338), runs the
+subsystems before the state, clears the name at +348, counts the +102 / +104 timers to their ends
+(`sub_821DD118` with 1/4 or 2/8), the +116 cooldown (by 2 for robots 0, 3, 4, 6, 12, 13) and +448,
+calls the movement state's handler from the table at 0x82027C80 (through the function table, so
+the rewritten handlers run), eases +600 toward +598 by at most 2560 a tick, then the subsystems
+after the state (some twice for side 1, with the flag byte at 0x83858820), the motion function,
+the other countdowns, and copies the next values (+284..+300) into place. Dordray (0) has a fall
+for his +48 value, Specineff (10) the +452 countdown with its sounds. The callees are called by
+the names the original calls, so the hooked rewrites (motion, states 0 and 19) run inside it too.
+Checked on `feiyen_training.otr`: 40,200 calls, 0 mismatches, first try; end to end 0 drifting
+ticks (twice). A planted bug (the 2560 limit as 2559) gave 3 mismatches: the limit is rarely
+reached, but it was caught. With the call check on, the replay itself drifts from tick 12012
+(game state only, the same 10,351 ticks with and without the planted bug): checking runs a
+robot's whole tick three times, and what the callees change outside the compared memory is not
+put back. That is a limit of the check, not of the rewrite.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

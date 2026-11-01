@@ -20,6 +20,15 @@
 // the parameters), to state 12 substate 5, or to another substate. Robots 5
 // (Bal-Keros), 15 (Ajim) and 17 (Bradtos) have extra cases.
 //
+// sub_821F8168, the per-tick driver: sets Game +38508 to the robot's data,
+// eases the +4476 point toward the other robot, runs the subsystems before
+// the state, counts the timers +102 / +104 / +116 / +448 down, calls the
+// movement state's handler from the table at 0x82027C80, eases +600 toward
+// +598, runs the subsystems after it and the motion function (sub_821F6A10,
+// or sub_821F75E8 while Game +24932 is set), then counts the other timers
+// down and copies the next values (+284..+300) into place. Robots 0
+// (Dordray), 10 (Specineff) and 17 (Bradtos) have extra steps.
+//
 // Every callee runs as the original code. The original passes some of them
 // the registers the previous call left (for example sub_821E0160 right after
 // sub_821DD230), so the rewrite keeps one register context running through
@@ -67,6 +76,31 @@ REX_EXTERN(__imp__sub_821DF990);
 REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
+REX_EXTERN(__imp__sub_821F8168);
+// The driver's callees, by the names the original calls (some are rewrites).
+REX_EXTERN(sub_822AC098);
+REX_EXTERN(sub_821E8B98);
+REX_EXTERN(sub_821E0308);
+REX_EXTERN(sub_821FF668);
+REX_EXTERN(sub_821E9900);
+REX_EXTERN(sub_82561440);
+REX_EXTERN(sub_8216D160);
+REX_EXTERN(sub_821DD118);
+REX_EXTERN(sub_821F9260);
+REX_EXTERN(sub_821A5C20);
+REX_EXTERN(sub_821CFB90);
+REX_EXTERN(sub_822AAAC0);
+REX_EXTERN(sub_82242528);
+REX_EXTERN(sub_82241FB0);
+REX_EXTERN(sub_822A6B70);
+REX_EXTERN(sub_8224FE78);
+REX_EXTERN(sub_822518C8);
+REX_EXTERN(sub_821B3AF8);
+REX_EXTERN(sub_821FC8C0);
+REX_EXTERN(sub_821F75E8);
+REX_EXTERN(sub_821F6A10);
+REX_EXTERN(sub_8214EED8);
+REX_EXTERN(sub_8214F638);
 
 namespace oratan::decomp {
 namespace {
@@ -1096,6 +1130,348 @@ void VerifyState19(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+constexpr uint32_t kStateTable = 0x82027C80;  // 32 x {handler, two words}
+constexpr uint32_t kDriverFlag = 0x83858820;  // u8, set around side 1's second pass
+constexpr uint32_t kZeroFloat = 0x8200095C, kFallThreshold = 0x82000958;
+constexpr uint32_t kEaseFactor = 0x82001590;                 // double
+constexpr uint32_t kFallLimit = 0x820224B8, kFallStep = 0x82017340;  // doubles
+constexpr uint32_t kFallScale = 0x820282F8, kFallBase = 0x82001388;  // doubles
+constexpr uint32_t kDriverSoundAmount = 0x820176C8;          // float
+constexpr uint32_t kDriverSound1 = 0x82028300, kDriverSound2 = 0x820282E4, kDriverSound3 = 0x820282D0;
+
+double GuestFloat(const uint8_t* base, uint32_t address) {
+  return double(std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, address))));
+}
+
+double GuestDouble(const uint8_t* base, uint32_t address) {
+  return std::bit_cast<double>(uint64_t(*game::GuestPtr<be<uint64_t>>(base, address)));
+}
+
+// u16 counter: one step toward 0 (+-1), as the original's adds of 0xFFFF / 1.
+void CountToZero(const Control& c, uint32_t o) {
+  const int32_t v = c.S16(o);
+  if (v > 0) c.SetH(o, uint32_t(v - 1));
+  else if (v < 0) c.SetH(o, uint32_t(v + 1));
+}
+
+void Driver(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 240;
+  const uint32_t frame = k.k.r1.u32;
+  const auto call = [&](void (*fn)(PPCContext&, uint8_t*)) { return k.Call(fn, c.a); };
+  const uint32_t game_address = k.Call(sub_822AC098, 0);
+  const uint32_t side_object = k.Call(sub_822AC098, 0) + (c.a == game_address + 25020 ? 0 : 192);
+  const Control side{base, side_object};
+  const Control g{base, game_address};
+  const bool side1 = c.a == game_address + 25020, side2 = c.a == game_address + kControl2;
+  // Side 2 builds the sound in `first` and copies it into the other buffer.
+  const auto sound = [&](uint32_t id, uint32_t table, uint32_t first) {
+    k.k.r4.u64 = id;
+    k.k.r5.u64 = table;
+    if (side2) {
+      const uint32_t r = k.Call(sub_821A5C20, frame + first);
+      k.k.r5.u64 = 256;
+      k.Call(sub_821CFB90, frame + (first == 128 ? 160 : 128), r);
+      k.Call(sub_822AAAC0);
+      return true;
+    }
+    k.Call(sub_821A5C20, frame + 160);
+    k.Call(sub_822AAAC0);
+    return false;
+  };
+
+  g.SetW(game::kGameRobotData, c.W(76));
+  const uint32_t other = c.W(72);
+  k.k.fpscr.disableFlushMode();
+  const double other_x = GuestFloat(base, other + 24);
+  if (c.H(338) > 18) {
+    const double ease = GuestDouble(base, kEaseFactor);
+    const double y = GuestFloat(base, c.a + 4480), z = GuestFloat(base, c.a + 4484);
+    SetFloat(c, 4476, double(float(double(float(other_x + GuestFloat(base, c.a + 4476))) * ease)));
+    SetFloat(c, 4480, double(float(double(float(GuestFloat(base, other + 28) + y)) * ease)));
+    SetFloat(c, 4484, double(float(double(float(GuestFloat(base, other + 32) + z)) * ease)));
+  } else {
+    SetFloat(c, 4476, other_x);
+    SetFloat(c, 4480, GuestFloat(base, other + 32));
+    SetFloat(c, 4484, GuestFloat(base, other + 32));
+  }
+  k.k.r4.u64 = other;
+  call(sub_821E8B98);
+  if (c.B(1) != 3) {
+    call(sub_821E0308);
+    call(sub_821FF668);
+  }
+  k.k.r4.u64 = other;
+  call(sub_821E9900);
+
+  // Clears the 24-byte name at +348 from an empty string on the stack.
+  *game::GuestPtr<uint8_t>(base, frame + 104) = 0;
+  *game::GuestPtr<be<uint32_t>>(base, frame + 96) = 2;
+  *game::GuestPtr<be<uint32_t>>(base, frame + 100) = 0;
+  c.SetW(340, 2);
+  c.SetW(344, 0);
+  k.k.r5.u64 = 24;
+  k.k.r4.u64 = 0;
+  const uint32_t end = k.Call(sub_82561440, frame + 104);
+  k.k.r6.u64 = end != 0 ? end - (frame + 104) : 24;
+  k.k.r5.u64 = 24;
+  k.k.r4.u64 = frame + 104;
+  k.Call(sub_8216D160, c.a + 348);
+
+  c.SetW(580, c.W(580) & ~0x280000u);
+  const uint32_t game_again = k.Call(sub_822AC098, 0);
+  *game::GuestPtr<be<uint32_t>>(base, kSideFlags + (c.a != game_again + 25020 ? 4 : 0)) = 0;
+
+  const auto timer_end = [&](uint32_t timer, uint32_t hold, uint32_t length, uint32_t at_end,
+                             uint32_t near_end) {
+    const int32_t t = c.S16(timer);
+    if (t == 0 || int8_t(c.B(hold)) > 0) return;
+    const int32_t n = int32_t(c.W(length));
+    if (t >= n - 1) {
+      c.SetH(timer, uint32_t(n - 1));
+      k.k.r4.u64 = at_end;
+    } else if (t >= n - 2) {
+      k.k.r4.u64 = near_end;
+    } else {
+      return;
+    }
+    call(sub_821DD118);
+  };
+  timer_end(102, 100, 612, 1, 4);
+  timer_end(104, 101, 628, 2, 8);
+
+  const uint32_t state = c.H(272);
+  c.SetB(569, 0);
+  const double zero = GuestFloat(base, kZeroFloat);
+  SetFloat(c, 376, zero);
+  SetFloat(c, 372, zero);
+  if (state != 0 && state != 1) c.SetB(4494, 0);
+  const uint32_t robot = c.B(2);
+  const int32_t cooldown = int32_t(c.W(116));
+  if (In(robot, {0, 6, 3, 13, 4, 12})) {
+    c.SetW(116, cooldown > 1 ? uint32_t(cooldown - 2) : 0);
+  } else if (cooldown > 0) {
+    c.SetW(116, uint32_t(cooldown - 1));
+  }
+  if (c.S16(448) < 0) c.SetH(448, uint32_t(c.S16(448) + 1));
+
+  if (robot == 10 && c.H(452) == 0xFFFE) {
+    if (c.B(180) == 255) {
+      if (c.B(1) == 0 && k.Call(sub_821F9260) == c.a) sound(0xC1DA9, kDriverSound1, 128);
+      c.SetH(452, 680);
+    } else if (state != 0 || c.H(274) != 0) {
+      c.SetH(452, 0xFFFF);
+    }
+  }
+
+  if (c.H(272) < 32) {
+    const uint32_t handler = *game::GuestPtr<be<uint32_t>>(base, kStateTable + c.H(272) * 12);
+    k.k.ctr.u64 = handler;
+    k.k.r3.u64 = c.a;
+    rex::runtime::ResolveIndirectFunction(handler)(k.k, base);
+  }
+
+  const uint8_t turn_mode = c.B(569);
+  if (turn_mode == 0) {
+    const int32_t now = c.S16(600);
+    int32_t d = int16_t(uint16_t(uint32_t(c.H(598)) - uint32_t(now)));
+    if (d > 2560) d = 2560;
+    if (d < -2560) d = -2560;
+    c.SetH(600, uint32_t(d + now));
+  } else if (turn_mode == 1) {
+    const uint32_t target = c.H(game::kControlRef2);
+    c.SetH(600, 0);
+    c.SetH(598, target);
+    if (int16_t(target) > 2560) c.SetH(598, 2560);
+    else if (int16_t(target) < -2560) c.SetH(598, uint32_t(-2560));
+    c.SetB(569, 0);
+  } else if (turn_mode == 2) {
+    c.SetH(598, 0);
+    c.SetH(600, 0);
+    c.SetB(569, 0);
+  }
+
+  if (c.B(1) == 0) {
+    const int32_t v = side.S16(100);
+    const auto settle = [&]() {
+      if (v > 0) side.SetH(100, v <= 256 ? 0 : uint32_t(v - 256));
+      else if (v < 0) side.SetH(100, v >= -256 ? 0 : uint32_t(v + 256));
+    };
+    if (c.H(272) == 5) {
+      settle();
+    } else {
+      const int32_t w = int32_t(c.W(256));
+      if (w > 0) {
+        if (v < 1536) side.SetH(100, uint32_t(v + 256));
+      } else if (w < 0) {
+        if (v > -1536) side.SetH(100, uint32_t(v - 256));
+      } else {
+        settle();
+      }
+    }
+    const uint32_t a = c.H(276), st = c.H(272);
+    uint32_t value = 0;
+    if (a == 4 && st == 3) value = 36;
+    else if (a == 8 && st == 5) value = 48;
+    else if (a == 2 && st == 16 && c.B(577) == 1) value = 48;
+    else if (a == 8 && st == 8) value = 48;
+    else if (a == 116 && st == 10) value = 64;
+    if (value != 0) side.SetH(140, value);
+  }
+
+  call(int32_t(g.W(kGameBusy)) != 0 ? sub_82242528 : sub_82241FB0);
+  if (int8_t(k.Call(sub_822A6B70)) != 4) call(sub_8224FE78);
+  const bool second_pass = In(c.B(2), {17, 18}) || g.W(24920) != 0 ||
+                           (c.S16(314) < 4 && c.S16(316) < 4) || (g.W(588) & 1) != 0;
+  if (second_pass) {
+    if (int8_t(k.Call(sub_822A6B70)) != 4) {
+      call(sub_822518C8);
+    } else if (side1) {
+      *game::GuestPtr<uint8_t>(base, kDriverFlag) = 1;
+      call(sub_8224FE78);
+      call(sub_822518C8);
+      *game::GuestPtr<uint8_t>(base, kDriverFlag) = 0;
+      call(sub_8224FE78);
+      call(sub_822518C8);
+    }
+  }
+  if (int8_t(k.Call(sub_822A6B70)) != 4 || side1) {
+    call(sub_821B3AF8);
+    call(sub_821FC8C0);
+  }
+
+  if (c.B(1) != 3) {
+    call(int32_t(g.W(kGameBusy)) != 0 ? sub_821F75E8 : sub_821F6A10);
+    call(sub_8214EED8);
+    if (c.H(156) != 0) c.SetH(156, c.H(156) - 1);
+    if ((c.H(156) & 7) == 0) {
+      const int32_t hold = int8_t(c.B(100));
+      const int32_t v = c.S16(436);
+      if (hold > 0) {
+        c.SetB(100, uint32_t(hold - 1));
+        c.SetH(436, uint32_t(v < 0 ? v : -v));
+      } else {
+        const int32_t t = int16_t(uint16_t(c.H(102) + 1));
+        c.SetB(100, 0);
+        c.SetH(102, uint32_t(t));
+        if (c.B(2) == 17 && c.S16(80) <= c.S16(88) / 2 && c.H(272) != 19 && c.H(272) != 30 &&
+            t < int32_t(c.W(612)) - 1) {
+          c.SetH(102, c.H(102) + 1);
+        }
+        c.SetH(436, uint32_t((v < 0 ? -v : v) + 1));
+      }
+    }
+    CountToZero(c, 442);
+    CountToZero(c, 444);
+
+    const uint32_t robot2 = c.B(2);
+    if (robot2 == 0 && c.H(450) == 0) {
+      const double y = GuestFloat(base, c.a + 48), threshold = GuestFloat(base, kFallThreshold);
+      if (y > threshold && c.H(272) != 24) {
+        if (y > GuestDouble(base, kFallLimit)) {
+          SetFloat(c, 48, double(float(y - GuestDouble(base, kFallStep))));
+        } else {
+          SetFloat(c, 48, threshold);
+          const uint32_t params = c.W(76);
+          c.SetH(450, uint32_t(-480));
+          const auto param = [&](uint32_t o) { return uint32_t(*game::GuestPtr<be<uint16_t>>(base, params + o)); };
+          c.SetW(408, param(3508));
+          c.SetW(404, param(3510));
+          c.SetW(412, param(3512));
+        }
+      }
+    }
+    const int32_t h450 = c.S16(450);
+    if (h450 > 0 && h450 < 32767) {
+      const int32_t n = int16_t(uint16_t(h450 - 1));
+      c.SetH(450, uint32_t(n));
+      if (robot2 == 0) {
+        if (n < 30) {
+          const double x = double(int64_t(c.S16(450)));
+          SetFloat(c, 48, double(float(std::fma(x, GuestDouble(base, kFallScale), GuestDouble(base, kFallBase)))));
+        }
+      } else if (n == 0 && In(robot2, {4, 11, 12})) {
+        c.SetH(450, uint32_t(-600));
+      }
+    }
+
+    if (robot2 == 10 && c.H(452) != 0 && c.H(452) < 0xFFFE) {
+      const uint32_t n = (c.H(452) + 0xFFFF) & 0xFFFF;
+      c.SetH(452, n);
+      if (n == 0) {
+        c.SetH(82, 0);
+        c.SetH(80, 0);
+        if (c.B(1) == 0 && int8_t(g.B(24914)) > 0 && k.Call(sub_821F9260) == c.a) sound(0xE1DA9, kDriverSound2, 160);
+      }
+      if (c.B(1) == 0 && int8_t(g.B(24914)) > 0 && c.H(452) % 50 == 0 && k.Call(sub_821F9260) == c.a) {
+        k.k.r3.u64 = sound(0xD1DA9, kDriverSound3, 160) ? 1 : 0;
+        k.k.r6.u64 = 4;
+        k.k.r5.u64 = 10;
+        k.k.f1.f64 = GuestFloat(base, kDriverSoundAmount);
+        k.Call(sub_8214F638);
+      }
+    }
+
+    const auto blink = [&](uint32_t o) {
+      if (c.H(o) == 0) return;
+      const uint32_t n = (c.H(o) + 0xFFFF) & 0xFFFF;
+      c.SetH(o, n);
+      if (n > 3 && c.B(181) != 0) c.SetH(o, (n + 0xFFFC) & 0xFFFF);
+    };
+    blink(446);
+    if (c.H(456) != 0) c.SetH(456, c.H(456) - 1);
+    if (c.S16(318) > 0) c.SetH(318, uint32_t(c.S16(318) - 1));
+    blink(458);
+    blink(460);
+    blink(462);
+    if (c.H(450) >= 0x8000 && c.S16(450) > -32767) c.SetH(450, c.H(450) + 1);
+
+    if (int8_t(c.B(286)) >= 0) c.SetB(577, c.B(286));
+    if (c.S16(292) >= 0) c.SetH(102, c.H(292));
+    if (c.S16(294) >= 0) c.SetH(104, c.H(294));
+    if (int32_t(c.W(300)) >= 0) c.SetH(278, c.W(300));
+    if (c.S16(296) >= 0) c.SetH(436, c.H(296));
+    if (int8_t(c.B(284)) >= 0) c.SetB(100, c.B(284));
+    if (int8_t(c.B(285)) >= 0) c.SetB(101, c.B(285));
+  }
+  if (c.S16(80) <= 0) c.SetB(337, 0);
+}
+
+void VerifyDriver(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) {
+    const uint32_t generators = game::LoadGuestAddress(base, game::kRandomGenerators);
+    const uint32_t random_state = game::LoadGuestAddress(base, generators + 16 * 1 + 4);
+    verifier = new Verifier("sub_821F8168", base,
+                            {{game_address, 0xD000, "game"},
+                             {kSideFlags, 8, "side flags"},
+                             {kDriverFlag, 1, "driver flag"},
+                             {game::kRandomCalls, 4, "random calls"},
+                             {random_state, game::kRandomStateSize, "random state"}});
+  }
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821F8168(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        Driver(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} state {} sub {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(272), c.H(274), c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -1115,4 +1491,13 @@ REX_HOOK_RAW(sub_821F2538) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState19(ctx, base);
   oratan::decomp::State19(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821F8168) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821F8168(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyDriver(ctx, base);
+  oratan::decomp::Driver(ctx, base);
 }
