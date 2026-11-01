@@ -566,6 +566,19 @@ calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 
 (the first plant didn't apply because of the file's line endings, so it proved nothing and
 was redone).
 
+**`sub_821F2538`, movement state 19** (2026-10-31, `robot_states.cpp`). Substate 0 hands over
+to `sub_821F1BE0`. Otherwise the handler sets the speed (+372) from the robot's data by substate
+group (2-4, 5-7, the rest; +278 == 1 picks a second set; substates 11-16 have their own values
+and timers +568 / +576, and robot 5 a fixed speed), may scale it by the +612 / +102 timers, sets
+the +337 / +4494 window flags from the robot's parameter tables, and when `sub_821DD180` says the
+move is over, ends it to state 0 (+312 from the parameters), to state 12 substate 5, or to
+another substate. Robots 15 (Ajim) and 17 (Bradtos) have extra cases. It also sets bit 16 of a
+per-side word at 0x83869E18, which the call check compares too. Callees stay original, with one
+register context as in state 0 (it passes `sub_821DFC50` the r3 that `sub_821DD230` returned).
+Checked on `feiyen_training.otr`: 4,200 calls, 0 mismatches, first try; end to end 0 drifting
+ticks; a planted bug (speed times 1.01) gave 1,665. Only Fei-Yen's paths ran, so the robot 5,
+15 and 17 cases are not covered by the recording.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

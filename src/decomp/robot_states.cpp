@@ -11,6 +11,15 @@
 // latched class. Most of the control block fields it touches are not named
 // yet, so they are written by offset here.
 //
+// sub_821F2538, state 19: substate 0 hands over to sub_821F1BE0. Otherwise
+// it sets the speed (+372) from the robot's data by substate group (2-4,
+// 5-7, others; +278 == 1 picks the second set, substates 11-16 their own
+// values and timers +568 / +576), may scale it by the +612 / +102 timers,
+// sets the +337 / +4494 window flags from the robot's parameter tables, and
+// when sub_821DD180 says the move is over, ends it back to state 0 (+312 from
+// the parameters), to state 12 substate 5, or to another substate. Robots 5
+// (Bal-Keros), 15 (Ajim) and 17 (Bradtos) have extra cases.
+//
 // Every callee runs as the original code. The original passes some of them
 // the registers the previous call left (for example sub_821E0160 right after
 // sub_821DD230), so the rewrite keeps one register context running through
@@ -49,6 +58,15 @@ REX_EXTERN(__imp__sub_821DD1E0);
 REX_EXTERN(__imp__sub_821DD230);
 REX_EXTERN(__imp__sub_821E0160);
 REX_EXTERN(__imp__sub_821C01D8);
+REX_EXTERN(__imp__sub_821F2538);
+REX_EXTERN(__imp__sub_822AC098);
+REX_EXTERN(__imp__sub_821F1BE0);
+REX_EXTERN(__imp__sub_821DFC50);
+REX_EXTERN(__imp__sub_821DD890);
+REX_EXTERN(__imp__sub_821DF990);
+REX_EXTERN(__imp__sub_821DF200);
+REX_EXTERN(__imp__sub_821DF440);
+REX_EXTERN(__imp__sub_821E01E0);
 
 namespace oratan::decomp {
 namespace {
@@ -716,6 +734,368 @@ void VerifyCall(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+constexpr uint32_t kSideFlags = 0x83869E18;  // u32 per side, +16 set by state 19
+constexpr uint32_t kState19Sound1 = 0x82028104, kState19Sound2 = 0x820280F8;
+constexpr uint32_t kState19Speed = 0x82010844;          // robot 5's speed in substates 11-16
+constexpr uint32_t kState19NextSubstate = 0x82027FA0;   // u32, by sub_821DF440's result
+
+void SetFloat(const Control& c, uint32_t o, double v) {
+  *game::GuestPtr<be<uint32_t>>(c.base, c.a + o) = std::bit_cast<uint32_t>(float(v));
+}
+
+// Back to state 12 substate 5.
+void ToState12(const Control& c, Caller& k) {
+  c.SetH(288, 0);
+  c.SetH(272, 12);
+  c.SetH(290, 0);
+  c.SetH(274, 0);
+  c.SetB(286, 0);
+  c.SetH(292, 0);
+  c.SetW(300, 0);
+  c.SetB(0, 0);
+  c.SetW(584, 2);
+  c.SetH(12, 0);
+  c.SetH(598, 0);
+  c.SetH(594, 0);
+  k.Call(__imp__sub_821E0160, c.a, 5);
+}
+
+// Back to the free state.
+void EndMove(const Control& c) {
+  for (uint32_t o : {272u, 288u, 290u, 274u, 294u, 594u, 598u, 12u, 4492u, 292u}) c.SetH(o, 0);
+  c.SetW(584, 0);
+  c.SetW(112, 0);
+}
+
+void State19(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 176;
+  const uint32_t frame = k.k.r1.u32;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  k.Call(__imp__sub_822AC098, 0);
+  const auto game_word = [&](uint32_t o) { return *game::GuestPtr<be<uint32_t>>(base, game_address + o); };
+  const uint32_t side = c.a != game_address + 25020 ? 1 : 0;
+  auto flags = game::GuestPtr<be<uint32_t>>(base, kSideFlags + side * 4);
+  *flags = uint32_t(*flags) | 16;
+  const uint32_t sub = c.H(274);
+  c.SetW(580, c.W(580) | 0x8000);
+  if (sub == 0) {
+    k.Call(__imp__sub_821F1BE0, c.a);
+    return;
+  }
+  const uint32_t data = game_word(game::kGameRobotData);
+  const uint32_t entry = c.W(588);
+  const uint32_t params = c.W(76);
+  const auto param = [&](uint32_t o) { return uint32_t(*game::GuestPtr<be<uint16_t>>(base, params + o)); };
+  const auto speed = [&](uint32_t table) {
+    k.k.r4.s64 = c.S16(20);
+    k.Call(__imp__sub_821DD890, table);
+    SetFloat(c, 372, k.k.f1.f64);
+  };
+  const auto group_offset = [&](uint32_t first) {
+    const uint32_t s = c.H(274);
+    return In(s, {2, 3, 4}) ? first : In(s, {5, 6, 7}) ? first + 20 : first + 40;
+  };
+  const auto sound = [&](uint32_t id, uint32_t table) {
+    k.k.r4.u64 = id;
+    k.k.r5.u64 = table;
+    const uint32_t r = k.Call(__imp__sub_821A5C20, frame + 96);
+    k.Call(__imp__sub_821ED918, c.a, r);
+  };
+  const auto finish = [&]() {
+    c.SetB(286, 1);
+    k.Call(__imp__sub_821E01E0, c.a);
+    c.SetH(292, 0);
+  };
+  const auto hold = [&]() {
+    c.SetH(292, 0);
+    c.SetB(286, 2);
+    c.SetB(284, 8);
+  };
+  // Another substate from sub_821DF200's +290 (the original's loc_821F2F94).
+  const auto change_substate = [&](uint32_t next) {
+    if (next != c.H(274)) {
+      c.SetH(274, next);
+      c.SetH(438, 0);
+      c.SetH(296, 0);
+      c.SetB(440, c.B(440) + 1);
+      k.Call(__imp__sub_821E01E0, c.a);
+    }
+    c.SetH(290, 0);
+    c.SetH(292, 0);
+  };
+  const auto from_df200 = [&]() {
+    if (k.Call(__imp__sub_821DF200, c.a) != 0) {
+      c.SetH(292, 0);
+      return;
+    }
+    const uint32_t next = c.H(290);
+    if (next != 0) {
+      change_substate(next);
+    } else if (c.H(288) == 12) {
+      c.SetH(290, 0);
+      c.SetH(274, 0);
+      c.SetB(286, 0);
+      c.SetH(272, 12);
+      c.SetW(300, 0);
+      c.SetB(0, 0);
+      c.SetW(584, 2);
+      c.SetH(12, 0);
+      c.SetH(598, 0);
+      c.SetH(594, 0);
+      c.SetH(312, 8);
+      c.SetB(284, 8);
+      k.Call(__imp__sub_821E0160, c.a, 5);
+      c.SetH(292, 0);
+    } else {
+      hold();
+    }
+  };
+  const auto df440 = [&](uint32_t r6) {
+    k.k.r6.u64 = r6;
+    k.k.r5.u64 = 1;
+    return int32_t(k.Call(__imp__sub_821DF440, c.a, 1));
+  };
+  const auto may_end_to_12 = [&]() { return c.B(172) == 255 && (c.B(4494) & 2) == 0; };
+  const auto ajim_sound = [&]() { return c.B(2) == 15 && c.H(274) == 8 && (entry == 0 || entry == 3); };
+
+  if (c.H(278) == 1) {
+    k.Call(__imp__sub_821DD230, c.a, 32);
+    k.k.r4.u64 = 0x38393A;
+    k.k.r5.u64 = data + entry * 48 + 3028;
+    k.Call(__imp__sub_821DFC50);  // r3 as sub_821DD230 left it
+    speed(data + group_offset(1104));
+    k.Call(__imp__sub_821DF990, c.a, data + entry * 48 + 3028);
+    const uint8_t mode = c.B(577);
+    if (mode == 1) {
+      const uint32_t limit = param(3640);
+      if (int32_t(c.W(416)) >= int32_t(limit)) {
+        c.SetW(416, limit);
+        c.SetB(286, 2);
+        c.SetH(292, 0);
+        return;
+      }
+      if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+        from_df200();
+      } else if (c.B(2) == 17) {
+        const int32_t r = df440(1);
+        if (r != 0) c.SetH(290, uint32_t(r));
+      }
+    } else if (mode == 0) {
+      if (k.Call(__imp__sub_821DD180, c.a, 1) == 0) return;
+      if (ajim_sound() && c.H(454) != 0) {
+        c.SetH(454, c.H(454) - 1);
+        sound(0x911A9, kState19Sound1);
+        return;
+      }
+      const uint32_t s = c.H(274);
+      const int32_t kind = s == 8 ? 2 : s == 2 ? 1 : s == 5 ? 0 : -1;
+      k.k.r6.u64 = 2;
+      k.k.r5.u64 = 0;
+      if (kind >= 0 && k.Call(__imp__sub_82257F50, c.a, uint32_t(kind)) != 0) {
+        c.SetB(286, 1);
+        c.SetH(292, 0);
+        k.Call(__imp__sub_821E01E0, c.a);
+        return;
+      }
+      c.SetB(286, 2);
+      c.SetH(292, 0);
+    } else {
+      if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+        const uint32_t s = c.H(274);
+        c.SetH(312, s == 5 ? param(entry * 8 + 3556) : s == 2 ? param(entry * 8 + 3558)
+                                                       : param(entry * 8 + 3560));
+        EndMove(c);
+        c.SetB(576, 0);
+        c.SetB(577, 0);
+        c.SetH(102, 0);
+        c.SetH(104, 0);
+        c.SetW(300, 0);
+      } else if (may_end_to_12()) {
+        ToState12(c, k);
+      }
+    }
+    return;
+  }
+
+  if (sub >= 11 && sub <= 16) {
+    if (c.B(336) != 8) c.SetB(336, 7);
+    uint32_t window;
+    if (sub == 11) {
+      c.SetB(568, 4);
+      k.k.r4.s64 = c.S16(20);
+      k.Call(__imp__sub_821DD890, data + 984);
+      window = params + 2024;
+      c.SetB(576, 120);
+      SetFloat(c, 372, k.k.f1.f64);
+    } else if (sub == 13) {
+      c.SetB(568, 11);
+      k.k.r4.s64 = c.S16(20);
+      k.Call(__imp__sub_821DD890, data + 1004);
+      window = params + 2014;
+      c.SetB(576, 121);
+      SetFloat(c, 372, k.k.f1.f64);
+    } else if (c.B(2) == 5) {
+      c.SetB(568, 30);
+      window = params + 2154;
+      c.SetB(576, 63);
+      c.SetW(372, *game::GuestPtr<be<uint32_t>>(base, kState19Speed));
+    } else {
+      c.SetB(568, 16);
+      k.k.r4.s64 = c.S16(20);
+      k.Call(__imp__sub_821DD890, data + 1024);
+      window = params + 2034;
+      c.SetB(576, 122);
+      SetFloat(c, 372, k.k.f1.f64);
+    }
+    const auto window_h = [&](uint32_t o) { return uint32_t(*game::GuestPtr<be<uint16_t>>(base, window + o)); };
+    const uint8_t mode = c.B(577);
+    if (mode == 2) {
+      k.k.fpscr.disableFlushMode();
+      const int32_t total = int32_t(c.W(612));
+      const double whole = double(float(double(int64_t(total))));
+      const double left = double(float(double(int64_t(int32_t(uint32_t(total) - uint32_t(c.S16(102)))))));
+      const double now = double(std::bit_cast<float>(c.W(372)));
+      SetFloat(c, 372, double(float(double(float(left * now)) / whole)));
+    }
+    const int32_t timer = c.S16(102);
+    if (mode == 1) {
+      uint32_t window_flags = int32_t(window_h(0)) <= timer && int32_t(window_h(2)) > timer ? 1 : 0;
+      c.SetB(337, window_flags);
+      if (int32_t(window_h(4)) <= timer && int32_t(window_h(6)) > timer) c.SetB(337, window_flags | 2);
+      const uint32_t end = window_h(6);
+      const uint64_t sum = uint64_t(uint32_t(timer) - end) + uint64_t(end ^ 0x80000000u);
+      c.SetB(4494, (sum >> 32) != 0 ? 0 : 255);
+    } else if (mode == 2) {
+      const uint32_t t = uint32_t(timer), end = window_h(8);
+      const uint32_t carry = t >= end ? 1 : 0;
+      c.SetB(4494, (~(t >> 31) + carry) & 0xFF);
+      c.SetB(337, 0);
+    } else {
+      c.SetB(4494, 0);
+      c.SetB(337, 0);
+    }
+    if (k.Call(__imp__sub_821DD180, c.a, 1) == 0) return;
+    const uint8_t mode2 = c.B(577);
+    if (mode2 == 0) {
+      finish();
+    } else if (mode2 == 2) {
+      const uint32_t s = c.H(274);
+      c.SetH(312, param(s == 13 ? 3596 : s == 11 ? 3598 : 3600));
+      EndMove(c);
+      c.SetB(286, 0);
+      c.SetB(284, 4);
+    } else {
+      c.SetH(292, 0);
+      c.SetB(286, 2);
+    }
+    return;
+  }
+
+  const bool busy = game_word(kGameBusy) != 0;
+  k.Call(__imp__sub_821DD230, c.a, busy ? 2048 : 16);
+  k.k.r4.u64 = 0x28292A;
+  k.k.r5.u64 = data + entry * 48 + 2548;
+  k.Call(__imp__sub_821DFC50, c.a);
+  speed(data + group_offset(984));
+  k.Call(__imp__sub_821DF990, c.a, data + entry * 48 + 2548);
+  if (game_word(kGameBusy) == 0 && (c.W(584) == 2 || c.W(584) == 3)) {
+    if (c.B(577) == 0 || c.B(577) == 1) {
+      int32_t d = int16_t(uint16_t(uint32_t(c.S16(game::kControlRef2) - c.S16(594)) - c.H(8)));
+      if (d > 8192) d = 8192;
+      if (d < -8192) d = -8192;
+      c.SetH(598, uint32_t(d));
+    } else {
+      c.SetH(598, 0);
+    }
+  }
+  const uint32_t over = k.Call(__imp__sub_821DD180, c.a, 1);
+  const uint8_t mode = c.B(577);
+  if (over != 0) {
+    if (mode == 0) {
+      if (ajim_sound() && c.H(456) <= 480) {
+        c.SetH(456, c.H(456) == 0 ? 480 : 960);
+        sound(0x811A9, kState19Sound2);
+      }
+      finish();
+    } else if (mode == 2) {
+      const uint32_t s = c.H(274);
+      c.SetH(312, s == 5 ? param(entry * 8 + 3516) : s == 2 ? param(entry * 8 + 3518)
+                                                         : param(entry * 8 + 3520));
+      EndMove(c);
+      c.SetB(576, 0);
+      c.SetB(577, 0);
+      c.SetH(102, 0);
+      c.SetH(104, 0);
+      if (game_word(kGameBusy) != 0) c.SetB(336, 9);
+    } else {
+      from_df200();
+    }
+    return;
+  }
+  if (mode == 1) {
+    if (c.B(2) == 17) {
+      const int32_t r = df440(1);
+      if (r != 0) c.SetH(290, *game::GuestPtr<be<uint32_t>>(base, kState19NextSubstate + uint32_t(r) * 4));
+    } else if (may_end_to_12()) {
+      ToState12(c, k);
+      c.SetH(312, param(entry * 8 + 3514));
+    }
+  } else if (mode == 2) {
+    if (may_end_to_12()) {
+      ToState12(c, k);
+    } else if (c.B(2) == 17) {
+      const int32_t r = df440(0);
+      if (r == 0 || (r >= 11 && r <= 16)) return;
+      if (uint32_t(r) != c.H(274)) {
+        c.SetH(438, 0);
+        c.SetH(274, uint32_t(r));
+        c.SetH(290, 0);
+        c.SetH(296, 0);
+        c.SetB(440, c.B(440) + 1);
+        k.Call(__imp__sub_821E01E0, c.a);
+      }
+      c.SetB(286, 1);
+      c.SetH(292, 0);
+    }
+  }
+}
+
+void VerifyState19(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) {
+    const uint32_t generators = game::LoadGuestAddress(base, game::kRandomGenerators);
+    const uint32_t random_state = game::LoadGuestAddress(base, generators + 16 * 1 + 4);
+    verifier = new Verifier("sub_821F2538", base,
+                            {{game_address, 0xD000, "game"},
+                             {kSideFlags, 8, "side flags"},
+                             {game::kRandomCalls, 4, "random calls"},
+                             {random_state, game::kRandomStateSize, "random state"}});
+  }
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821F2538(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        State19(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} b278 {} mode {} robot {}",
+                           control == game_address + kControl2 ? 2 : 1, c.H(274), c.H(278), c.B(577),
+                           c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -726,4 +1106,13 @@ REX_HOOK_RAW(sub_821EE610) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyCall(ctx, base);
   oratan::decomp::FreeState(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821F2538) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821F2538(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState19(ctx, base);
+  oratan::decomp::State19(ctx, base);
 }
