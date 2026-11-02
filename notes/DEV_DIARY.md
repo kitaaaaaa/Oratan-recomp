@@ -684,6 +684,16 @@ set); with none, a robot standing still with +170 at 231-251 goes to substate 17
 reference replay `sub_821DD968` returns a substate here only once, so the substate branches are
 mostly unverified.
 
+**`sub_82241FB0`, the move number** (2026-11-01, `robot_move_number.cpp`). Each tick unless Game
++24932 is set: by the button state (+576) it runs `sub_82241D58`, sets +580 bits 32 / 64 or sets
++106, then calls the robot's handler for the button state (lists at 0x828A1E98, 17 for robots above
+17). +584 is changed while it runs (bit 2 for button states 14 / 15, +580 bit 0x10000000 flips it)
+and put back at the end; robots 9 and 17 adjust +608. 120,600 calls, 0 mismatches, first try; end
+to end 0 drifting ticks; a planted bug gave 86,453 (a first plant, skipping button state 0's
+handler, gave none: that handler changes nothing here). `sub_82242528`, its counterpart while Game
++24932 is set, is written (`robot_move_number_busy.cpp`) but never runs in the reference replay, so
+it is left out of the build until a recording reaches it.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

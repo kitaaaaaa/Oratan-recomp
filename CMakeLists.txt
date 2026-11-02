@@ -37,6 +37,7 @@ set(ORATAN_SOURCES
     src/decomp/robot_effects.cpp
     src/decomp/robot_input.cpp
     src/decomp/robot_motion.cpp
+    src/decomp/robot_move_number.cpp
     src/decomp/robot_states.cpp
     src/decomp/robot_weapon_gauges_and_ranges.cpp
     src/decomp/robot_loader.cpp
