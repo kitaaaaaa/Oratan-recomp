@@ -725,6 +725,16 @@ robots 0, 10, 12 and 15 are refused by +2192 bits; a refusal sets Game + (9640 /
 side) * 4 to 32. 1,800 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug
 gave 777.
 
+**Four small state helpers** (2026-11-02, `robot_states.cpp`): `sub_821DD180` (`MotionFlags`, the
+side's motion flags at 0x83869E18 masked), `sub_821DD230` (`TurnTarget`, +594 from +12 turned by a
+quarter toward 0 / 32768 unless a parameter bit is set), `sub_821DD890` (`SpeedByAngle`, a speed
+interpolated from five floats by the angle folded to 0-32768) and `sub_821E0160` (`AddTo112`, +112
+grows by a parameter, not below 0). One live check each: 96,000 / 6,000 / 30,000 / 700 calls, 0
+mismatches, first try; end to end 0 drifting ticks; planted bugs gave 70,446 / 126 / 41,709 / 1,000
+(the first plants for `sub_821DD180` and `sub_821E0160` changed nothing and were replaced).
+`sub_821DD810` (to state 11) was written too but never runs in the reference replay, so it was
+left out.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

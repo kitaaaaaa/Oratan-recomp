@@ -47,6 +47,9 @@
 //
 // sub_821DD2B0: fills sub_821DD968's record; see FillChoiceRecord.
 //
+// sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160: small helpers
+// (MotionFlags, TurnTarget, SpeedByAngle, AddTo112).
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -3401,6 +3404,94 @@ void VerifyFillChoiceRecord(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// Small helpers the states share.
+
+// sub_821DD180(control, mask): the side's motion flags (0x83869E18, one word
+// per side; bit 1: the move is over) masked.
+constexpr uint32_t kMotionFlags = 0x83869E18;
+
+void MotionFlags(PPCContext& ctx, uint8_t* base) {
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kObjectTable);
+  const uint32_t side = ctx.r3.u32 != game_address + 25020 ? 1 : 0;
+  ctx.r3.u64 = *game::GuestPtr<be<uint32_t>>(base, kMotionFlags + side * 4) & ctx.r4.u32;
+}
+
+// sub_821DD230(control, mask): +594 from +12, turned by a quarter toward the
+// nearest of 0 / 32768 unless the robot's parameter +112 has a bit of mask:
+// 8193-24575 lose 16384, 24576-40960 lose 32768, 40961-57343 gain 16384.
+void TurnTarget(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  const uint32_t a = c.H(12);
+  uint32_t v = a;
+  if ((Control{base, c.W(76)}.H(112) & ctx.r4.u32) == 0) {
+    if (a > 8192 && a < 24576) {
+      v = a - 16384;
+    } else if (a >= 24576 && a <= 40960) {
+      v = a - 32768;
+    } else if (a > 40960 && a < 57344) {
+      v = a + 16384;
+    }
+  }
+  c.SetH(594, v);
+}
+
+// sub_821DD890(table, angle): a speed from five floats at table, by the
+// angle folded to 0-32768, interpolated between the two values around it
+// (one per 8192).
+void SpeedByAngle(PPCContext& ctx, uint8_t* base) {
+  const uint32_t table = ctx.r3.u32;
+  int32_t a = int32_t(ctx.r4.u32 & 0xFFFF);
+  if (a > 32768) a = 65536 - a;
+  const uint32_t segment = a < 8192 ? 0 : a < 16384 ? 1 : a < 24576 ? 2 : 3;
+  const int32_t frac = a - int32_t(segment) * 8192;
+  const auto f = [&](uint32_t o) { return std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, o))); };
+  const float low = f(table + segment * 4), high = f(table + segment * 4 + 4);
+  const float step = (high - low) * float(double(frac));
+  ctx.f1.f64 = double(float(std::fma(double(step), double(f(0x82027FEC)), double(low))));
+}
+
+// sub_821E0160(control, n): +112 grows by the robot's parameter n + 1911
+// (n + 1924 while Game +24932 is set), not below 0.
+void AddTo112(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 112;
+  const uint32_t n = ctx.r4.u32;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const uint32_t index = n + (Control{base, game_address}.W(kGameBusy) != 0 ? 1924 : 1911);
+  const int32_t v = int16_t(Control{base, c.W(76)}.H(index * 2)) + int32_t(c.W(112));
+  c.SetW(112, v < 0 ? 0 : uint32_t(v));
+  ctx.r3.u64 = game_address;
+}
+
+// One live check per helper; `result` reads what the helper returns.
+void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
+                 void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
+                 uint32_t report_every) {
+  static std::map<std::string, Verifier*> verifiers;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  Verifier*& verifier = verifiers[name];
+  if (!verifier) verifier = new Verifier(name, base, {{game_address, 0xD000, "game"}});
+  const auto result = [&](const PPCContext& k) {
+    return float_result ? std::bit_cast<int64_t>(k.f1.f64) : int64_t(k.r3.u32);
+  };
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        original_fn(original, base);
+        return result(original);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        rewrite_fn(rewrite, base);
+        return result(rewrite);
+      },
+      [&] { return fmt::format("r3 {:08X} r4 {:08X}", ctx.r3.u32, ctx.r4.u32); },
+      report_every);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -3510,4 +3601,48 @@ REX_HOOK_RAW(sub_821DD2B0) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyFillChoiceRecord(ctx, base);
   oratan::decomp::FillChoiceRecord(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD180) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD180(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DD180", __imp__sub_821DD180, oratan::decomp::MotionFlags, ctx, base, false, 6000);
+  }
+  oratan::decomp::MotionFlags(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD230) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD230(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DD230", __imp__sub_821DD230, oratan::decomp::TurnTarget, ctx, base, false, 6000);
+  }
+  oratan::decomp::TurnTarget(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD890) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD890(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DD890", __imp__sub_821DD890, oratan::decomp::SpeedByAngle, ctx, base, true, 6000);
+  }
+  oratan::decomp::SpeedByAngle(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E0160) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E0160(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821E0160", __imp__sub_821E0160, oratan::decomp::AddTo112, ctx, base, false, 100);
+  }
+  oratan::decomp::AddTo112(ctx, base);
 }
