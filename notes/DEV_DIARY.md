@@ -735,6 +735,13 @@ mismatches, first try; end to end 0 drifting ticks; planted bugs gave 70,446 / 1
 `sub_821DD810` (to state 11) was written too but never runs in the reference replay, so it was
 left out.
 
+**Two more state helpers** (2026-11-02, `robot_states.cpp`): `sub_821E01E0`
+(`AddTo112BySubstate`, +112 grows by a parameter picked by the substate; any other substate reads
+whatever its stack frame holds) and `sub_821DF990` (`AttackFlag4494`, +4494 for an attack's
+substate from a parameter bit, or 255 until +102 reaches the parameters' timer window). 800 /
+6,000 calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 800 / 1,404
+(a first plant in `sub_821E01E0`'s substate 2-4 parameter changed nothing).
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

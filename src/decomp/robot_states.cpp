@@ -47,8 +47,9 @@
 //
 // sub_821DD2B0: fills sub_821DD968's record; see FillChoiceRecord.
 //
-// sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160: small helpers
-// (MotionFlags, TurnTarget, SpeedByAngle, AddTo112).
+// sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160, sub_821E01E0,
+// sub_821DF990: small helpers (MotionFlags, TurnTarget, SpeedByAngle,
+// AddTo112, AddTo112BySubstate, AttackFlag4494).
 //
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
@@ -3465,6 +3466,79 @@ void AddTo112(PPCContext& ctx, uint8_t* base) {
   ctx.r3.u64 = game_address;
 }
 
+// sub_821E01E0(control): +112 grows by a parameter picked by the substate
+// (2-4: 8, 5-7: 7, 8-10: 9, 11-12: 11, 13-14: 10, 15-16: 12; any other
+// substate uses whatever its stack frame holds at +80), as AddTo112.
+void AddTo112BySubstate(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  const uint32_t frame = ctx.r1.u32 - 112;
+  k.k.r1.u64 = frame;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const uint32_t sub = c.H(274);
+  uint32_t n;
+  if (sub >= 2 && sub <= 4) {
+    n = 8;
+  } else if (sub >= 5 && sub <= 7) {
+    n = 7;
+  } else if (sub >= 8 && sub <= 10) {
+    n = 9;
+  } else if (sub == 11 || sub == 12) {
+    n = 11;
+  } else if (sub == 13 || sub == 14) {
+    n = 10;
+  } else if (sub == 15 || sub == 16) {
+    n = 12;
+  } else {
+    n = *game::GuestPtr<be<uint32_t>>(base, frame + 80);
+  }
+  const uint32_t index = n + (Control{base, game_address}.W(kGameBusy) != 0 ? 1924 : 1911);
+  const int32_t v = int16_t(Control{base, c.W(76)}.H(index * 2)) + int32_t(c.W(112));
+  c.SetW(112, v < 0 ? 0 : uint32_t(v));
+  ctx.r3.u64 = game_address;
+}
+
+// sub_821DF990(control, params): +4494 for an attack's substate. With +577
+// clear: 255 / 0 from bit 1 of the group's parameter (+0 for 5-7, +16 for
+// 2-4, else +32; 1 instead of 0 while +278 is 1). Otherwise it is 255
+// until +102 reaches the timer window in the parameters (+10 / +26 / +42;
+// a negative value counts while +577 is 1), then 0.
+void AttackFlag4494(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  const Control p{base, ctx.r4.u32};
+  const uint32_t b577 = c.B(577);
+  const uint32_t sub = c.H(274);
+  c.SetB(4494, 255);
+  if (b577 == 0) {
+    const uint32_t o = In(sub, {5, 7, 6}) ? 0 : In(sub, {2, 4, 3}) ? 16 : 32;
+    const bool bit = (p.H(o) & 1) != 0;
+    c.SetB(4494, bit ? 255 : c.H(278) == 1 ? 1 : 0);
+    return;
+  }
+  uint32_t first, second;
+  if (sub == 5) {
+    first = second = 10;
+  } else if (sub == 2) {
+    first = second = 26;
+  } else if (sub == 8) {
+    first = 26, second = 42;
+  } else {
+    return;
+  }
+  const int32_t t102 = c.S16(102);
+  if (b577 == 1) {
+    const int32_t t = p.S16(sub == 8 ? 42 : first);
+    if (t < 0 && !(t102 < -t)) c.SetB(4494, 0);
+  } else if (b577 == 2) {
+    if (p.H(first) >= 32768) {
+      c.SetB(4494, 0);
+    } else {
+      const int32_t t = p.S16(second);
+      if (t >= 0 && !(t102 < t)) c.SetB(4494, 0);
+    }
+  }
+}
+
 // One live check per helper; `result` reads what the helper returns.
 void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
                  void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
@@ -3645,4 +3719,26 @@ REX_HOOK_RAW(sub_821E0160) {
     oratan::decomp::VerifySmall("sub_821E0160", __imp__sub_821E0160, oratan::decomp::AddTo112, ctx, base, false, 100);
   }
   oratan::decomp::AddTo112(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E01E0) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E01E0(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821E01E0", __imp__sub_821E01E0, oratan::decomp::AddTo112BySubstate, ctx, base, false, 100);
+  }
+  oratan::decomp::AddTo112BySubstate(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DF990) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DF990(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DF990", __imp__sub_821DF990, oratan::decomp::AttackFlag4494, ctx, base, false, 100);
+  }
+  oratan::decomp::AttackFlag4494(ctx, base);
 }
