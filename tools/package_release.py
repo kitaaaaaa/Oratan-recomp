@@ -58,7 +58,8 @@ Controls:
 System Link (versus on the local network): on each PC, run
 allow-firewall.bat once, tick "System Link on the local network" in F1 and
 restart, then choose Multiplayer > System Link. The first player waits, the
-next one joins.
+next one joins. "Xbox LIVE modes on the local network" in F1 does the same
+for Player Match (Quick Match, Custom Match).
 
 Alpha: the game is playable from start to finish. Bug reports and logs are
 welcome at
@@ -73,14 +74,15 @@ No game files are included.
 FIREWALL_BAT = """\
 @echo off
 rem Lets other PCs on the local network reach Oratan's System Link
-rem (UDP 1000-1002, from the local subnet only). Needs administrator rights.
+rem and Xbox LIVE modes (UDP 1000-1002 and 3076, from the local subnet only).
+rem Needs administrator rights.
 net session >nul 2>&1
 if errorlevel 1 (
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b
 )
 netsh advfirewall firewall delete rule name="Oratan System Link" >nul 2>&1
-netsh advfirewall firewall add rule name="Oratan System Link" dir=in action=allow program="%~dp0oratan.exe" protocol=UDP localport=1000-1002 remoteip=LocalSubnet profile=any enable=yes
+netsh advfirewall firewall add rule name="Oratan System Link" dir=in action=allow program="%~dp0oratan.exe" protocol=UDP localport=1000-1002,3076 remoteip=LocalSubnet profile=any enable=yes
 echo.
 echo Done. You can close this window.
 pause

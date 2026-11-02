@@ -70,6 +70,7 @@ int CurrentMsaa() {
 // System Link (SDK system_link, player_name): the console's network identity
 // is made at startup, so changes apply on restart.
 int g_system_link_at_startup = -1;
+int g_lan_live_at_startup = -1;  // SDK lan_live: Xbox LIVE modes on the LAN
 std::string g_player_name_at_startup;
 
 constexpr size_t kMaxPlayerName = 15;  // a gamertag's length
@@ -80,6 +81,7 @@ void RememberStartupSettings() {
   g_height_at_startup = CurrentHeight();
   g_msaa_at_startup = CurrentMsaa();
   g_system_link_at_startup = rex::cvar::Query<bool>("system_link") ? 1 : 0;
+  g_lan_live_at_startup = rex::cvar::Query<bool>("lan_live") ? 1 : 0;
   g_player_name_at_startup = rex::cvar::GetFlagByName("player_name");
 }
 
@@ -252,7 +254,12 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     rex::cvar::SetFlagByName("system_link", system_link ? "true" : "false");
     Save();
   }
-  ImGui::BeginDisabled(!system_link);
+  bool lan_live = rex::cvar::Query<bool>("lan_live");
+  if (ImGui::Checkbox("Xbox LIVE modes on the local network (experimental)", &lan_live)) {
+    rex::cvar::SetFlagByName("lan_live", lan_live ? "true" : "false");
+    Save();
+  }
+  ImGui::BeginDisabled(!system_link && !lan_live);
   static char player_name[kMaxPlayerName + 1] = {};
   static bool player_name_loaded = false;
   if (!player_name_loaded) {
@@ -272,9 +279,13 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   ImGui::EndDisabled();
   ImGui::TextDisabled("Multiplayer > System Link on each PC: the first player");
   ImGui::TextDisabled("waits, the next one joins. Same game version everywhere.");
+  ImGui::TextDisabled("Xbox LIVE modes: Player Match (Quick or Custom Match)");
+  ImGui::TextDisabled("finds the players on this network instead of on Live.");
+  const bool networked = system_link || lan_live;
   if (g_system_link_at_startup >= 0 &&
       ((system_link ? 1 : 0) != g_system_link_at_startup ||
-       (system_link && rex::cvar::GetFlagByName("player_name") != g_player_name_at_startup))) {
+       (lan_live ? 1 : 0) != g_lan_live_at_startup ||
+       (networked && rex::cvar::GetFlagByName("player_name") != g_player_name_at_startup))) {
     RestartNotice();
   }
 

@@ -121,7 +121,7 @@ The game's own System Link mode, between PCs on the same network:
 
 1. On each PC, allow the game through the Windows firewall once:
    double-click **allow-firewall.bat** (it asks for administrator rights and
-   only opens UDP 1000-1002 to the local network).
+   only opens UDP 1000-1002 and 3076 to the local network).
 2. Press **F1**, tick **System Link on the local network**, type a player
    name and click **Restart now**.
 3. On each PC: **Multiplayer > System Link**, pick a robot, **OK**. The first
@@ -134,6 +134,13 @@ PC whose VPN adapters hide its LAN address can be given it with
 `lan_address = "192.168.1.10"`. For testing, two copies run on one PC with
 `--lan_address=127.0.0.2` and `--lan_address=127.0.0.3` (and
 `--background_pads=false`, so the controller drives the focused window).
+
+**Xbox LIVE modes on the local network** (also experimental): tick it in F1
+(and restart), and **Multiplayer > Player Match** works between the PCs on
+the network: **Custom Match** opens a lobby, **Quick Match** on another PC
+finds it. There are no friends lists or invites, private matches can't be
+found, and the **Xbox LIVE Party Lobby** (the mode with observer slots) needs
+an Xbox Live party, which isn't emulated yet.
 
 ### Hidden stages and Bradtos (Training)
 
@@ -165,7 +172,8 @@ crash or misbehave and are left out.
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
 | Online versus (netplay, F1 → Netplay) | Experimental, tested on one PC; see above |
 | System Link (local network versus) | Working, experimental, see above |
-| Xbox Live (online versus, player match lobby with observers) | Not yet supported |
+| Xbox Live Player Match (Quick / Custom Match) on the local network | Working, experimental, see above |
+| Xbox Live Party Lobby (observers), Xbox Live over the internet | Not yet supported |
 
 ## Building from source
 

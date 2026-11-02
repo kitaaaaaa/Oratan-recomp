@@ -923,6 +923,41 @@ interface's subnet broadcast.
 - Not done: the Xbox Live player match lobby (it has observers and rematches), three or more
   PCs at once, play over a VPN.
 
+## 11. Xbox LIVE modes on the local network
+
+SDK patch 0008 (`lan_live`) runs the game's Player Match on the LAN.
+
+**What the game needs:**
+
+- **The Live connection notification.** Signin state 2 and allowed privileges aren't enough:
+  the online menus stay greyed until the notification handler (`sub_821200F8`) sees
+  `XN_LIVE_CONNECTIONCHANGED` with `XONLINE_S_LOGON_CONNECTION_ESTABLISHED` (0x001510F0), which
+  sets its "connected" byte (`0x829B3289`). `XN_LIVE_LINK_STATE_CHANGED` sets the next one. The SDK
+  now queues both to every new listener.
+- **Matchmaking = create, then search once.** Quick Match and Custom Match both create a Live
+  session as host (flags 0x42F: host, presence, stats, matchmaking, peer network), publish QoS,
+  join locally, then run one `XSessionSearchEx` (XGI 0x000B001C, through `sub_824B5CE8`). A
+  joiner finds the other's session, runs `XNetQosLookup`, deletes its own session, creates one
+  for the host's (flags 0x42E) and connects; game traffic is the same VDP sockets as System Link.
+- **The search answers from a LAN directory** (`lan_sessions.cpp`, UDP 3076): hosts announce
+  their public session every second with the contexts and properties the player set (4 and 9
+  here). The directory has to listen from boot: the game searches 10 ms after creating its own
+  session and never again, which an on-demand listener missed by 90 ms.
+- **Live system screens.** "View opponent's gamer card" left the game waiting for a screen that
+  never closed (`XamShowGamerCardUIForXUID` was a stub); those screens now open and close at once,
+  as achievements did in patch 0003.
+
+**Results** (2026-10-30): two copies on one PC, Custom Match on one, Quick Match on the other:
+found, connected and played, no errors.
+
+**Xbox LIVE Party Lobby** (the only mode with observer slots) does nothing after its rules
+screen. The game resolves Xbox Live party functions by ordinal at boot (`sub_824C8E30`, table at
+`0x839F6574`: `XamPartyGetUserList` 0xAFF, `XamPartySendGameInvites` 0xB00,
+`XamPartySetCustomData` 0xB0B, `XamPartyGetBandwidth` 0xB10, `XamShowPartyUI` 0x305,
+`XamShowCommunitySessionsUI` 0x30B) and reads the party on `XN_PARTY_MEMBERS_CHANGED`
+(0x0E040002, `sub_82115048`, a 3,848-byte list). The SDK reports no party (0x807D0003). Next:
+emulate one party made of every console on the LAN, with game invites carried over the LAN.
+
 ---
 
 *Working notes with every detail and the full history: `work\DIARY.md`. Model formats and
