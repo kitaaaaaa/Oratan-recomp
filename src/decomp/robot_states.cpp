@@ -50,7 +50,7 @@
 // sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160, sub_821E01E0,
 // sub_821DF990: small helpers (MotionFlags, TurnTarget, SpeedByAngle,
 // AddTo112, AddTo112BySubstate, AttackFlag4494); sub_821DF6E0 (LandingDash) and
-// sub_821DF440 (Command).
+// sub_821DF440 (Command), sub_821DFFA8 (AirAttack).
 //
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
@@ -122,6 +122,7 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821DFBA0);
 REX_EXTERN(__imp__sub_821E4BC0);
 REX_EXTERN(__imp__sub_821DFDD8);
 REX_EXTERN(__imp__sub_821DF7B8);
@@ -3626,6 +3627,55 @@ void Command(PPCContext& ctx, uint8_t* base) {
   ctx.r3.u64 = RefuseByKind(c, base, r);
 }
 
+// sub_821DFFA8(control, buttons, params): an attack in the air. By the
+// substate group it sets the button state (+576) from a byte of buttons
+// (5-7: bits 8-15, 2-4: bits 16-23, 8-10: bits 0-7) and, while +438 is below
+// the group's limit in params (+14 / +30 / +46) and sub_821DFBA0 agrees
+// (params + 0 / 16 / 32), fires the weapon (0 / 1 / 2) through
+// sub_822583A8 with the substate's variant and counts +438 up. Returns 0
+// for other substates (1 for robot 18).
+void AirAttack(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  const uint32_t frame = ctx.r1.u32 - 128;
+  k.k.r1.u64 = frame;
+  const uint32_t buttons = ctx.r4.u32, params = ctx.r5.u32;
+  const uint32_t sub = c.H(274);
+  uint32_t variant;
+  if (In(sub, {5, 2, 8})) {
+    variant = 0;
+  } else if (In(sub, {7, 4, 10})) {
+    variant = 2;
+  } else if (In(sub, {6, 3, 9})) {
+    variant = 1;
+  } else {
+    variant = *game::GuestPtr<be<uint32_t>>(base, frame + 80);
+  }
+  ctx.r3.u64 = 1;
+  if (c.B(2) == 18) return;
+  uint32_t weapon, button, limit, record;
+  if (In(sub, {5, 7, 6})) {
+    weapon = 0, button = (buttons >> 8) & 0xFF, limit = 14, record = params;
+  } else if (In(sub, {2, 4, 3})) {
+    weapon = 1, button = (buttons >> 16) & 0xFF, limit = 30, record = params + 16;
+  } else if (In(sub, {8, 10, 9})) {
+    weapon = 2, button = buttons & 0xFF, limit = 46, record = params + 32;
+  } else {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  c.SetB(576, button);
+  if (c.S16(438) >= int32_t(Control{base, params}.H(limit))) return;
+  k.k.r5.u64 = record;
+  k.k.r4.u64 = c.B(577);
+  if (k.Call(__imp__sub_821DFBA0, c.a) == 0) return;
+  k.k.r6.u64 = 1;
+  k.k.r5.u64 = variant;
+  k.k.r4.u64 = weapon;
+  k.Call(__imp__sub_822583A8, c.a);
+  c.SetH(438, c.H(438) + 1);
+}
+
 // One live check per helper; `result` reads what the helper returns.
 void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
                  void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
@@ -3850,4 +3900,15 @@ REX_HOOK_RAW(sub_821DF440) {
     oratan::decomp::VerifySmall("sub_821DF440", __imp__sub_821DF440, oratan::decomp::Command, ctx, base, false, 600);
   }
   oratan::decomp::Command(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DFFA8) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DFFA8(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DFFA8", __imp__sub_821DFFA8, oratan::decomp::AirAttack, ctx, base, false, 100);
+  }
+  oratan::decomp::AirAttack(ctx, base);
 }

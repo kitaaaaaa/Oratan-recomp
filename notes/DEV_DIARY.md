@@ -749,6 +749,13 @@ flags are set; `sub_821DF440` is the command states 15 and 19 read: specials (15
 with the substate-kind refusal (`RefuseByKind`, the same rule as `sub_821DD968`'s). 300 / 18,600
 calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 300 / 600.
 
+**`sub_821DFFA8`, an attack in the air** (2026-11-02, `robot_states.cpp`, `AirAttack`). By the
+substate group it sets the button state from a byte of its argument and, while +438 is below the
+group's limit and `sub_821DFBA0` agrees, fires the weapon through `sub_822583A8` and counts +438 up.
+400 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 800 of 800.
+`sub_821DEC58` (whether the air attack can fire again) was written too but runs only a couple of
+times in the reference replay, so it was left out.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
