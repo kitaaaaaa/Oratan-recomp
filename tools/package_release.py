@@ -49,11 +49,16 @@ Controls:
   Xbox controllers work as on the console.
   F1         Options: resolution (original, or native 1920x1080 /
              2560x1440 / 3840x2160), anti-aliasing, anisotropic filtering,
-             VSync, fullscreen, local versus
+             VSync, fullscreen, local versus, System Link
   Alt+Enter  Switch between fullscreen and a window
   LB / RB    In Training: on the stage select, show the hidden stages
              (Distorted Shrine, Tangram); on the character select, with the
              cursor on AJIM, switch that slot to BRADTOS
+
+System Link (versus on the local network): on each PC, run
+allow-firewall.bat once, tick "System Link on the local network" in F1 and
+restart, then choose Multiplayer > System Link. The first player waits, the
+next one joins.
 
 Alpha: the game is playable from start to finish. Bug reports and logs are
 welcome at
@@ -62,6 +67,23 @@ A log is written to the "logs" folder next to oratan.exe.
 
 This is an unofficial fan project, not affiliated with SEGA or Microsoft.
 No game files are included.
+"""
+
+
+FIREWALL_BAT = """\
+@echo off
+rem Lets other PCs on the local network reach Oratan's System Link
+rem (UDP 1000-1002, from the local subnet only). Needs administrator rights.
+net session >nul 2>&1
+if errorlevel 1 (
+  powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+  exit /b
+)
+netsh advfirewall firewall delete rule name="Oratan System Link" >nul 2>&1
+netsh advfirewall firewall add rule name="Oratan System Link" dir=in action=allow program="%~dp0oratan.exe" protocol=UDP localport=1000-1002 remoteip=LocalSubnet profile=any enable=yes
+echo.
+echo Done. You can close this window.
+pause
 """
 
 
@@ -93,6 +115,7 @@ def main() -> int:
 
     (stage / "assets" / "HOW TO ADD THE GAME.txt").write_text(ASSETS_TXT, newline="\r\n")
     (stage / "README.txt").write_text(README_TXT.format(version=version), newline="\r\n")
+    (stage / "allow-firewall.bat").write_text(FIREWALL_BAT, newline="\r\n")
 
     out = ROOT / "dist" / f"Oratan-recomp-{version}-win64.zip"
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:

@@ -115,6 +115,26 @@ warns if the two games fall out of sync. **Leave netplay** restarts the game
 offline. If the other player disconnects, the game carries on offline after 10
 seconds.
 
+### System Link: versus on the local network (experimental)
+
+The game's own System Link mode, between PCs on the same network:
+
+1. On each PC, allow the game through the Windows firewall once:
+   double-click **allow-firewall.bat** (it asks for administrator rights and
+   only opens UDP 1000-1002 to the local network).
+2. Press **F1**, tick **System Link on the local network**, type a player
+   name and click **Restart now**.
+3. On each PC: **Multiplayer > System Link**, pick a robot, **OK**. The first
+   player waits for an opponent; the next one joins them. Every PC needs the
+   same version of this port.
+
+If the PCs don't find each other (Wi-Fi that drops broadcasts, VPNs), name
+the other PCs in `Virtual-On OT.toml`, e.g. `lan_peers = "192.168.1.20"`. A
+PC whose VPN adapters hide its LAN address can be given it with
+`lan_address = "192.168.1.10"`. For testing, two copies run on one PC with
+`--lan_address=127.0.0.2` and `--lan_address=127.0.0.3` (and
+`--background_pads=false`, so the controller drives the focused window).
+
 ### Hidden stages and Bradtos (Training)
 
 The game has stages and a boss that its menus never offer. In Training:
@@ -144,7 +164,8 @@ crash or misbehave and are left out.
 | Local two-player versus with split screen | Working, experimental, see above |
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
 | Online versus (netplay, F1 → Netplay) | Experimental, tested on one PC; see above |
-| Original Xbox Live / System Link menus | Not supported (netplay replaces them) |
+| System Link (local network versus) | Working, experimental, see above |
+| Xbox Live (online versus, player match lobby with observers) | Not yet supported |
 
 ## Building from source
 

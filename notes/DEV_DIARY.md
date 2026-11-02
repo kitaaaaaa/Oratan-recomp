@@ -876,6 +876,53 @@ own VR select (Training, Arcade, Score Attack) instead of a copy of player 1's, 
 select cursor should say "PLAYER 2" instead of "AI". An F1 Netplay panel would replace the
 command line. Later: VR headset support and a first-person view.
 
+## 10. System Link
+
+The XBLA release has a working System Link mode in its code and menus (Multiplayer > System
+Link). SDK patch 0007 gives the console a network; `src/system_link.cpp` fixes matchmaking.
+
+**What the game does** (all in its network session object, found by reading the recompiled
+code and the running game's memory):
+
+- A **state machine**: table at `0x82001198`, five words a state (enter, update, ?, exit, 0);
+  `sub_8212AAE8(session, state)` pushes the new state and runs its enter function. It does not
+  run the old state's exit. States: 0 idle (picks the next one from the menu's request), 2
+  create the session (`XSessionCreate`), 3 host, 4 search, 5 connect, 6 match, 7 end.
+- **LAN discovery** (`session+48`, `sub_82123130` once a frame): UDP port 1002 with
+  `SO_BROADCAST`. A searching console (`+216` = 2) broadcasts a 16-byte probe once a second:
+  `0x01328E96`, 1, its 8-byte id. A host (`+216` = 1) with a free slot answers with 176 bytes:
+  `0x01328E96`, 0, the id, then its 160-byte session (XSESSION_INFO, the host's name). The
+  answer is a broadcast too. Game traffic then uses VDP sockets on ports 1000 and 1001.
+- **The menu only ever hosts.** The idle state goes to search (4) when the request's host flag
+  (`+804`, copied from `+5264`) is clear and to create (2) when it's set, and the System Link
+  menu always sets it: two consoles both wait as hosts and never meet. The search state works;
+  nothing in the menus reaches it.
+
+**The fix** (`src/system_link.cpp`): every System Link "create" searches first (probes hurried
+to four a second by moving `+56`, the last probe time, back), and creates the session only if no
+host answers within a random 1.5-4.5 s. Before switching to create it runs the search's exit
+(`sub_82129EC8`) itself, which closes the discovery socket; without that the host state can't
+open its own and the session drops ("Disconnected from opponent"). `--system_link_role=host` or
+`join` keeps a copy to one role.
+
+**SDK side** (patch 0007): no network before it. `sendto`/`recvfrom` sent to and reported
+byte-swapped addresses and ports; `WSARecvFrom` had one parameter too few and always failed;
+`WSAGetOverlappedResult` was a stub; `XNetRandom` returned 0xBB bytes, so every copy picked the
+same ids; every copy had the same XUID and the name "User". The game enables `SO_BROADCAST` with
+a one-byte value. Windows sends a broadcast to 255.255.255.255 out of one interface only, which
+on a PC with VPN adapters (ZeroTier, Radmin) isn't the LAN's, so broadcasts also go to each
+interface's subnet broadcast.
+
+**Results** (2026-10-30):
+
+- Two copies on one PC (127.0.0.2 / 127.0.0.3): host first, joiner first, and both confirming
+  0.3 s apart all meet (in the last case the second found the first 127 ms after it started
+  hosting). Several matches in a row, both sides winning, no errors.
+- Two PCs on a home LAN (one with three ZeroTier and a Radmin adapter): found each other and
+  played once broadcasts went out on every interface and the firewall allowed UDP 1000-1002.
+- Not done: the Xbox Live player match lobby (it has observers and rematches), three or more
+  PCs at once, play over a VPN.
+
 ---
 
 *Working notes with every detail and the full history: `work\DIARY.md`. Model formats and
