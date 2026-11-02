@@ -23,8 +23,12 @@ void SaveSnapshot(const uint8_t* base, const std::string& dir);
 void InstallCrashReport();
 
 // With --capture_dir set, F9 saves guest memory for model export. Called once
-// per frame.
+// per frame; it also runs WriteMemoryExcerptIfRequested.
 void CaptureIfRequested(const uint8_t* base);
+
+// With --memory_excerpt_list / --memory_excerpt_out set, writes the listed guest
+// memory ranges once, on the first fight tick.
+void WriteMemoryExcerptIfRequested(const uint8_t* base);
 
 // Logs changes to the addresses listed in --watch_u32. Called once per frame.
 void CheckWatches(const uint8_t* base, uint32_t frame);
