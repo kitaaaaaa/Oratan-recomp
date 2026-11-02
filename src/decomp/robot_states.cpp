@@ -42,6 +42,9 @@
 // sub_821E1FF0: after sub_821E4D58's substate handler, a jump (state 12) or
 // a class move (state 19); see JumpOrClassMove.
 //
+// sub_821E4BC0: sub_821E4D58's other substates while +278 isn't 1; see
+// MoveOtherSubstates.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -111,6 +114,12 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821E4BC0);
+REX_EXTERN(__imp__sub_821DFDD8);
+REX_EXTERN(__imp__sub_821DF7B8);
+REX_EXTERN(__imp__sub_821E3510);
+REX_EXTERN(__imp__sub_821E39C0);
+REX_EXTERN(__imp__sub_821E4088);
 REX_EXTERN(__imp__sub_821E1FF0);
 REX_EXTERN(__imp__sub_821E2328);
 REX_EXTERN(__imp__sub_822583A8);
@@ -3161,6 +3170,88 @@ void VerifyJumpOrClassMove(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// sub_821E4BC0: sub_821E4D58's other substates while +278 isn't 1. It sets
+// the buttons' move through sub_821DD230 and the speed from the robot's data
+// by substate group (2-4, 5-7, else substate 8), runs sub_821DF7B8 with the
+// group's parameters (+2228 / +2212 / +2244) and a bit of the data's +114
+// flags, then sub_821E3510 (substate 8), sub_821E39C0 (Game +24932 set) or
+// sub_821E4088. The original passes registers from one call on to the
+// next (sub_821DFDD8's result in r6), so they run through one context.
+void MoveOtherSubstates(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 112;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  const auto data = [&] { return g.W(game::kGameRobotData); };
+  const auto busy = [&] { return g.W(kGameBusy) != 0; };
+
+  k.Call(__imp__sub_821DD230, c.a, busy() ? 512 : 2);
+  k.k.r6.u64 = 38;
+  k.k.r5.u64 = 37;
+  k.k.r4.u64 = 36;
+  k.k.r6.u64 = k.Call(__imp__sub_821DFDD8, c.a);
+  const uint32_t sub = c.H(274);
+  uint32_t flag = 0, params;
+  const auto speed = [&](uint32_t table) {
+    k.k.r4.u64 = c.W(248);
+    k.Call(__imp__sub_821DD890, data() + table);
+    SetFloat(c, 372, k.k.f1.f64);
+  };
+  if (In(sub, {2, 4, 3})) {
+    speed(924);
+    const uint32_t flags = Control{base, data()}.H(114);
+    flag = busy() ? flags & 16 : flags & 4;
+    params = c.W(76) + 2228;
+  } else if (In(sub, {5, 7, 6})) {
+    speed(944);
+    const uint32_t flags = Control{base, data()}.H(114);
+    flag = busy() ? flags & 8 : flags & 2;
+    params = c.W(76) + 2212;
+  } else {
+    speed(964);
+    c.SetH(274, 8);
+    params = c.W(76) + 2244;
+  }
+  k.k.r4.u64 = flag;
+  k.k.r5.u64 = params;
+  k.Call(__imp__sub_821DF7B8, c.a);
+  if (c.H(274) == 8) {
+    k.k.r4.u64 = k.k.r6.u64;
+    k.Call(__imp__sub_821E3510);
+  } else {
+    k.k.r5.u64 = k.k.r6.u64;
+    k.k.r4.u64 = flag;
+    k.Call(busy() ? __imp__sub_821E39C0 : __imp__sub_821E4088);
+  }
+}
+
+void VerifyMoveOtherSubstates(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821E4BC0", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821E4BC0(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        MoveOtherSubstates(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} robot {}", control == game_address + kControl2 ? 2 : 1, c.H(274),
+                           c.B(2));
+      },
+      10);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -3252,4 +3343,13 @@ REX_HOOK_RAW(sub_821E1FF0) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyJumpOrClassMove(ctx, base);
   oratan::decomp::JumpOrClassMove(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E4BC0) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E4BC0(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyMoveOtherSubstates(ctx, base);
+  oratan::decomp::MoveOtherSubstates(ctx, base);
 }

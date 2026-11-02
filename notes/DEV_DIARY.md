@@ -700,6 +700,14 @@ substates 8-10), or state 19 with the move tables for the class at +164 while fl
 while Game +24932 is set only the class move, through `sub_821DD230` / `sub_821C01D8`. 2,400 calls,
 0 mismatches, first try; end to end 0 drifting ticks; a planted bug in the jump gave 27.
 
+**`sub_821E4BC0`, `sub_821E4D58`'s other substates** (2026-11-01, `robot_states.cpp`,
+`MoveOtherSubstates`). While +278 isn't 1: the buttons' move through `sub_821DD230`, the speed by
+substate group (2-4, 5-7, else substate 8), `sub_821DF7B8` with the group's parameters, then
+`sub_821E3510` / `sub_821E39C0` / `sub_821E4088`; registers pass from call to call as in the
+original (`sub_821DFDD8`'s result stays in r6). Checked only in verify mode, where it runs 150
+times after the known verify-mode drift (tick 12012): 0 mismatches; end to end 0 drifting ticks;
+a planted bug in the speed gave 90 of 90 (one in `sub_821DD230`'s argument, 2 -> 3, changed nothing).
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
