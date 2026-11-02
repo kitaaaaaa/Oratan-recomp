@@ -34,6 +34,7 @@ set(ORATAN_SOURCES
     src/decomp/robot_camera.cpp
     src/decomp/robot_control.cpp
     src/decomp/robot_damage.cpp
+    src/decomp/robot_effects.cpp
     src/decomp/robot_input.cpp
     src/decomp/robot_motion.cpp
     src/decomp/robot_states.cpp

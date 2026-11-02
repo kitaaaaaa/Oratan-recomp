@@ -655,6 +655,17 @@ planted bug (110% -> 111%) gave 147. A coverage probe (removed) shows the common
 the Fei-Yen replay; the robot-specific branches (robots 0, 4, 8, 9, 10, 11, 12, 15, 17, 18) and some
 flags (0x10 .. 0x100, 0x10000, 0x1000000, healing) do not.
 
+**`sub_821B3AF8`, the effect step** (2026-11-01, `robot_effects.cpp`). Each tick, by stage kind
+(0x83876DF4), movement state and button state (+576 / +577), it starts effects with
+`sub_821B2CB0(kind, x, y, z, record, flags)` (a 32-slot pool at 0x83854410) and
+`sub_82286120(id, ...)` (two 64-slot pools at 0x8389B490): smoke from a downed robot, state 12's,
+dashing (with a sound), landing, robots 8 / 9's own, stage kind 5's and footsteps; +576 == 127 has
+its own random effects. 120,600 calls, 0 mismatches after three fixes the verifier found (state 13's
++274 test inverted, side 2's landing flag address, and the second pool first had to be declared to
+the verifier); a control run of the original against itself gave 0; end to end 0 drifting ticks; a
+planted bug gave 1,071. The reference replay is on stage kind 19, so the footstep branches for the
+other stage kinds, stage kind 5's and the +576 == 127 branch don't run there.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
