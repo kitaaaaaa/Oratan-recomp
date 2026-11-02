@@ -36,7 +36,8 @@ REXCVAR_DEFINE_STRING(memory_excerpt_list, "", "Oratan",
                       "Developer: a text file of guest memory ranges to write once to "
                       "--memory_excerpt_out, on the first fight tick. Each line: an address "
                       "expression, a length, and optionally 'as ADDRESS' (where to file the "
-                      "block). Expression tokens: numbers (0x.. hex or decimal), +N / -N, and "
+                      "block) or 'committed' (only its committed pages, as separate blocks). "
+                      "Expression tokens: numbers (0x.. hex or decimal), +N / -N, and "
                       "'*' (replace the value by the big-endian u32 at it); '#' starts a comment");
 REXCVAR_DEFINE_STRING(memory_excerpt_out, "", "Oratan",
                       "Developer: where --memory_excerpt_list writes its blocks: "
@@ -188,6 +189,7 @@ struct ExcerptRange {
   uint32_t length;
   bool filed_elsewhere;
   uint32_t filed_at;
+  bool committed_only;
   std::string line;
 };
 
@@ -235,9 +237,13 @@ bool ReadExcerptList(const std::string& path, std::vector<ExcerptRange>* ranges)
     std::string token;
     while (ss >> token) tokens.push_back(token);
     if (tokens.empty()) continue;
-    ExcerptRange r{"", 0, false, 0, line};
+    ExcerptRange r{"", 0, false, 0, false, line};
     size_t count = tokens.size();
     try {
+      if (count >= 3 && tokens[count - 1] == "committed") {
+        r.committed_only = true;
+        count -= 1;
+      }
       if (count >= 4 && tokens[count - 2] == "as") {
         r.filed_elsewhere = true;
         r.filed_at = ParseNumber(tokens[count - 1]);
@@ -287,7 +293,23 @@ void WriteMemoryExcerptIfRequested(const uint8_t* base) {
       REXLOG_ERROR("memory_excerpt: can't resolve '{}'", r.line);
       continue;
     }
-    blocks.push_back({address, r.filed_elsewhere ? r.filed_at : address, r.length});
+    if (!r.committed_only) {
+      blocks.push_back({address, r.filed_elsewhere ? r.filed_at : address, r.length});
+      continue;
+    }
+    // Only the committed, readable pages of the range, one block each run.
+    uint64_t at = address;
+    const uint64_t end = uint64_t(address) + r.length;
+    while (at < end) {
+      MEMORY_BASIC_INFORMATION info;
+      if (!VirtualQuery(base + at, &info, sizeof(info))) break;
+      const uint64_t region_end = std::min<uint64_t>(
+          end, uint64_t(static_cast<const uint8_t*>(info.BaseAddress) - base) + info.RegionSize);
+      if (info.State == MEM_COMMIT && !(info.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+        blocks.push_back({uint32_t(at), uint32_t(at), uint32_t(region_end - at)});
+      }
+      at = region_end;
+    }
   }
   FILE* f = std::fopen(out.c_str(), "wb");
   if (!f) {
