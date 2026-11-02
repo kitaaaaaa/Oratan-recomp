@@ -30,6 +30,9 @@ void CaptureIfRequested(const uint8_t* base);
 // memory ranges once, on the first fight tick.
 void WriteMemoryExcerptIfRequested(const uint8_t* base);
 
+// Writes the --memory_excerpt_list ranges to --memory_excerpt_out now.
+bool WriteMemoryExcerpt(const uint8_t* base);
+
 // Logs changes to the addresses listed in --watch_u32. Called once per frame.
 void CheckWatches(const uint8_t* base, uint32_t frame);
 

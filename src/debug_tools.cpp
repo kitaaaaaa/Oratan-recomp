@@ -44,6 +44,8 @@ REXCVAR_DEFINE_STRING(memory_excerpt_out, "", "Oratan",
                       "\"OXMX\", u32 version 1, u32 count, then per block u32 address, u32 "
                       "length and the bytes (header fields little-endian)");
 
+REXCVAR_DECLARE(std::string, robot_probe_out);
+
 REXCVAR_DEFINE_STRING(watch_u32, "", "Oratan",
                       "Developer: comma-separated guest addresses (hex) whose big-endian u32 "
                       "values are logged whenever they change, checked once per frame. "
@@ -270,9 +272,8 @@ void WriteLe32(FILE* f, uint32_t v) {
 
 void WriteMemoryExcerptIfRequested(const uint8_t* base) {
   static bool done = false;
-  const std::string list = REXCVAR_GET(memory_excerpt_list);
-  const std::string out = REXCVAR_GET(memory_excerpt_out);
-  if (done || list.empty() || out.empty()) return;
+  // With the robot probe on, the probe writes the excerpt itself, on its first tick.
+  if (done || !REXCVAR_GET(robot_probe_out).empty()) return;
   const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
   if (!game_address) return;
   const auto& g = *game::GuestPtr<game::Game>(base, game_address);
@@ -281,8 +282,15 @@ void WriteMemoryExcerptIfRequested(const uint8_t* base) {
     return;
   }
   done = true;
+  WriteMemoryExcerpt(base);
+}
+
+bool WriteMemoryExcerpt(const uint8_t* base) {
+  const std::string list = REXCVAR_GET(memory_excerpt_list);
+  const std::string out = REXCVAR_GET(memory_excerpt_out);
+  if (list.empty() || out.empty()) return false;
   std::vector<ExcerptRange> ranges;
-  if (!ReadExcerptList(list, &ranges)) return;
+  if (!ReadExcerptList(list, &ranges)) return false;
   struct Block {
     uint32_t address, filed_at, length;
   };
@@ -314,7 +322,7 @@ void WriteMemoryExcerptIfRequested(const uint8_t* base) {
   FILE* f = std::fopen(out.c_str(), "wb");
   if (!f) {
     REXLOG_ERROR("memory_excerpt: can't write {}", out);
-    return;
+    return false;
   }
   std::fwrite("OXMX", 1, 4, f);
   WriteLe32(f, 1);
@@ -326,6 +334,7 @@ void WriteMemoryExcerptIfRequested(const uint8_t* base) {
   }
   std::fclose(f);
   REXLOG_INFO("memory_excerpt: wrote {} blocks to {}", blocks.size(), out);
+  return true;
 }
 
 void CaptureIfRequested(const uint8_t* base) {

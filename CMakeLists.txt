@@ -25,6 +25,7 @@ set(ORATAN_SOURCES
     src/local_versus.cpp
     src/select_pages.cpp
     src/replay.cpp
+    src/robot_probe.cpp
     src/state_hash.cpp
     src/tick_hooks.cpp
     src/netplay.cpp
