@@ -675,6 +675,15 @@ fix (two sound table addresses); end to end 0 drifting ticks; a planted bug gave
 in the reference replay: the rise, the dashes in the air, two of the three attack groups and the
 robot specials.
 
+**`sub_821E2328`, substate 0 of the state `sub_821E4D58` handles** (2026-11-01, `robot_states.cpp`,
+`MoveSubstate0`). Sets the buttons' move (+576 1 / 4) and the speed from the robot's data by +577 /
++400, then takes `sub_821DD968`'s next substate (robot 17 hands some to `sub_822583A8`, Dordray's 16
+is state 9, 11-16 and 2-10 become the substate, or `sub_821DD810` while the other robot's +4495 is
+set); with none, a robot standing still with +170 at 231-251 goes to substate 17; +8 turns by +256.
+2,400 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 540. In the
+reference replay `sub_821DD968` returns a substate here only once, so the substate branches are
+mostly unverified.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

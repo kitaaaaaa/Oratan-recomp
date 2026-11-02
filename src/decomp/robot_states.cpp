@@ -36,6 +36,9 @@
 // sub_821F0288, state 12: in the air (the rise, attacks and dashes in the
 // air, the landing and the fall); see State12.
 //
+// sub_821E2328: substate 0 of the state sub_821E4D58 handles; see
+// MoveSubstate0.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -105,6 +108,8 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821E2328);
+REX_EXTERN(__imp__sub_822583A8);
 REX_EXTERN(__imp__sub_821F0288);
 REX_EXTERN(__imp__sub_821DEE00);
 REX_EXTERN(__imp__sub_821DFFA8);
@@ -2710,6 +2715,350 @@ void VerifyState12(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// sub_821E2328: substate 0 of the movement state sub_821E4D58 handles (its
+// number in the state table is not checked yet). It sets the buttons' move
+// (+576 1 or 4) through sub_821DD230 and the speed (+372) from the robot's
+// data by +577 and +400, then asks sub_821DD968 for the next substate:
+// robot 17 hands some of them to sub_822583A8, Dordray's 16 goes to state 9,
+// 11-16 and 2-10 become the substate (or sub_821DD810 while the other robot's
+// +4495 is set), and with no substate a robot standing still with +170 at
+// 231-251 goes to substate 17. At the end +8 turns by +256 (through
+// sub_821BFF48 while Game +24932 is set).
+void MoveSubstate0(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 128;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  const auto data = [&] { return g.W(game::kGameRobotData); };
+  const auto busy = [&] { return g.W(kGameBusy) != 0; };
+  const auto speed = [&](uint32_t table) {
+    k.k.r4.u64 = c.W(248);
+    k.Call(__imp__sub_821DD890, data() + table);
+    SetFloat(c, 372, k.k.f1.f64);
+  };
+  // While busy: the speed from `table` and +376 from the data by +174.
+  const auto busy_speed = [&](uint32_t table) {
+    speed(table);
+    c.SetW(376, Control{base, data()}.W((c.B(174) + 351) * 4));
+  };
+  const auto ask = [&](int32_t r6) {
+    k.k.r6.s64 = r6;
+    k.k.r5.s64 = -1;
+    return int32_t(k.Call(__imp__sub_821DD968, c.a, 1));
+  };
+  const auto robot17 = [&](int32_t r) {
+    const auto hand = [&](uint32_t r4) {
+      k.k.r6.u64 = 0;
+      k.k.r5.u64 = 0;
+      k.k.r4.u64 = r4;
+      k.Call(__imp__sub_822583A8, c.a);
+    };
+    if (r == 2) {
+      hand(1);
+    } else if (r == 5) {
+      hand(0);
+    } else if (r == 8) {
+      hand(2);
+    }
+  };
+  const auto to_state9 = [&] {
+    c.SetH(274, 0);
+    c.SetH(276, 0);
+    c.SetH(272, 9);
+    c.SetH(4492, 0);
+    c.SetW(584, 0);
+    c.SetB(286, 0);
+    c.SetH(292, 0);
+  };
+  // Whether sub_821DD810 runs instead (the other robot's +4495 set).
+  const auto other_blocks = [&](int32_t r, uint32_t robot) {
+    if (Control{base, c.W(72)}.B(4495) == 0) return false;
+    const bool listed = In(robot, {8, 0, 1, 16, 11});
+    return (In(uint32_t(r), {13, 14}) && listed) || (In(uint32_t(r), {11, 12}) && !listed);
+  };
+  const auto block = [&] {
+    k.Call(__imp__sub_821DD810, c.a);
+    c.SetH(288, 0);
+  };
+  const auto in_k = [](int32_t r) { return In(uint32_t(r), {2, 5, 8, 4, 7, 10, 3, 6, 9, 11, 13, 15}); };
+  // Dordray in his +450 mode: substate 13 / 11 straight away.
+  const auto dordray_dash = [&](int32_t r) {
+    c.SetH(272, 0);
+    c.SetH(290, 0);
+    c.SetB(577, 0);
+    c.SetH(294, 0);
+    c.SetW(584, 2);
+    for (uint32_t o : {598u, 594u, 12u}) c.SetH(o, 0);
+    c.SetB(4494, 255);
+    c.SetH(296, 0);
+    c.SetH(288, 0);
+    c.SetH(274, uint32_t(r));
+    c.SetH(278, 0);
+    c.SetW(112, 0);
+    c.SetH(292, 0);
+  };
+  // Substates 11-16.
+  const auto dash = [&](int32_t r) {
+    c.SetH(272, 0);
+    c.SetH(290, 0);
+    c.SetB(577, 0);
+    c.SetH(292, 0);
+    c.SetH(294, 0);
+    c.SetW(584, 2);
+    for (uint32_t o : {598u, 594u, 12u}) c.SetH(o, 0);
+    c.SetB(4494, 255);
+    c.SetH(296, 0);
+    c.SetH(288, 0);
+    c.SetH(274, uint32_t(r));
+    c.SetH(4492, 0);
+    c.SetH(592, 0);
+  };
+  // Substates 2-10 (9 and 10 become 8).
+  const auto attack = [&](int32_t r) {
+    const uint32_t n = r == 9 || r == 10 ? 8 : uint32_t(r);
+    if (c.B(170) == 0) {
+      c.SetH(278, 0);
+    } else {
+      c.SetW(300, 1);
+      if (c.B(170) < 240) {
+        c.SetH(272, 0);
+        c.SetH(598, 0);
+        c.SetW(584, 2);
+        c.SetH(594, 0);
+        c.SetH(12, 0);
+        c.SetB(284, 4);
+      }
+    }
+    c.SetH(290, 0);
+    c.SetH(274, n);
+    c.SetH(294, 0);
+    c.SetH(296, 0);
+    c.SetB(440, 0);
+    c.SetH(438, 0);
+    c.SetB(286, 0);
+    c.SetH(292, 0);
+  };
+  // Standing still with +170 at 231-251: substate 17.
+  const auto stand = [&](bool clear_290) {
+    const uint32_t b170 = c.B(170);
+    const int32_t turn = int16_t(c.H(4490) - c.H(8));
+    if (b170 > 230 && b170 < 252 && (c.W(400) & 21) != 0 && turn < 20480 && turn > -20480 && c.B(168) == 0 &&
+        c.B(167) == 0 && c.B(169) == 0) {
+      if (clear_290) c.SetH(290, 0);
+      c.SetH(272, 0);
+      c.SetH(288, 0);
+      c.SetH(274, 17);
+      c.SetH(598, 0);
+      c.SetH(594, 0);
+      c.SetB(336, 0);
+      c.SetW(112, 0);
+      c.SetW(584, 0);
+      c.SetB(286, 0);
+      c.SetH(292, 0);
+    }
+  };
+  // The move is over: back to the free state.
+  const auto reset = [&] {
+    for (uint32_t o : {272u, 288u, 290u, 274u}) c.SetH(o, 0);
+    c.SetB(576, 0);
+    c.SetB(577, 0);
+  };
+  const auto reset_rest = [&] {
+    for (uint32_t o : {102u, 294u, 104u}) c.SetH(o, 0);
+    c.SetW(584, 0);
+    for (uint32_t o : {594u, 598u, 12u, 4492u}) c.SetH(o, 0);
+    c.SetW(112, 0);
+    c.SetW(264, 0);
+  };
+
+  c.SetB(4494, 0);
+  c.SetH(104, 0);
+  c.SetB(440, 0);
+  c.SetH(438, 0);
+  if (busy()) {
+    c.SetB(576, 1);
+    k.Call(__imp__sub_821DD230, c.a, 256);
+  } else {
+    const uint32_t b576 = c.B(576);
+    const bool flags = (c.W(400) & 21) != 0;
+    if (b576 == 1 && flags && c.W(584) < 2) {
+      c.SetB(576, 4);
+      c.SetB(100, 6);
+      k.Call(__imp__sub_821DD230, c.a, 0);
+      c.SetB(336, 10);
+    } else if (b576 == 4 && flags) {
+      k.Call(__imp__sub_821DD230, c.a, 0);
+    } else {
+      if (b576 == 4) c.SetB(100, 6);
+      c.SetB(576, 1);
+      k.Call(__imp__sub_821DD230, c.a, 1);
+    }
+  }
+  const uint32_t b577 = c.B(577);
+  c.SetH(598, 0);
+
+  if (b577 == 0) {
+    if ((c.W(400) & 63) != 0) {
+      speed(764);
+    } else if (busy()) {
+      busy_speed(1284);
+    } else {
+      speed(744);
+    }
+    const uint32_t g2 = k.Call(__imp__sub_822AC098, 0);
+    const uint32_t side = c.a != g2 + 25020 ? 1 : 0;
+    if ((*game::GuestPtr<be<uint32_t>>(base, 0x83869E18 + side * 4) & 1) != 0) {
+      c.SetB(286, 1);
+      c.SetH(292, 0);
+    } else if (const int32_t r = ask(-1); r == 0) {
+      stand(false);
+    } else {
+      const uint32_t robot = c.B(2);
+      if (robot == 17) {
+        robot17(r);
+      } else if (robot == 18) {
+      } else if (robot == 0 && r == 16) {
+        to_state9();
+      } else if (robot == 0 && c.S16(450) > 0 && (r == 13 || r == 11)) {
+        dordray_dash(r);
+      } else if (r >= 11 && r <= 16) {
+        if (other_blocks(r, robot)) {
+          block();
+          c.SetH(278, 0);
+        } else {
+          dash(r);
+          c.SetW(300, in_k(r) && c.B(170) != 0 ? 1 : 0);
+          c.SetW(112, 0);
+        }
+      } else if (r >= 2 && r <= 10) {
+        attack(r);
+      }
+    }
+  } else if (b577 == 2) {
+    if (busy()) {
+      busy_speed(1284);
+    } else {
+      speed(744);
+    }
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      reset();
+      reset_rest();
+      c.SetH(278, 0);
+      c.SetH(292, 0);
+    } else {
+      c.SetB(441, 0);
+      const int32_t r = ask(0);
+      const uint32_t robot = c.B(2);
+      if (r == 0) {
+        stand(false);
+      } else if (robot == 17) {
+        robot17(r);
+      } else if (robot == 18) {
+      } else if (robot == 0 && r == 16) {
+        to_state9();
+      } else if (other_blocks(r, robot)) {
+        block();
+        c.SetH(278, 0);
+      } else {
+        c.SetH(272, 0);
+        c.SetH(290, 0);
+        c.SetH(274, uint32_t(r));
+        c.SetB(286, 0);
+        c.SetH(292, 0);
+        c.SetH(296, 0);
+        c.SetW(584, 2);
+        for (uint32_t o : {598u, 594u, 12u, 4492u, 592u}) c.SetH(o, 0);
+        c.SetB(4494, 255);
+        c.SetW(300, in_k(r) && c.B(170) != 0 ? 1 : 0);
+        c.SetW(112, 0);
+      }
+    }
+  } else {
+    if (busy()) {
+      busy_speed(1304);
+    } else {
+      speed(784);
+    }
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      c.SetH(292, 0);
+    } else {
+      c.SetB(441, k.Call(__imp__sub_821DD180, c.a, 4) != 0 ? 1 : 0);
+      const int32_t r = ask(-1);
+      const uint32_t robot = c.B(2);
+      if (r == 0) {
+        stand(true);
+      } else if (robot == 17) {
+        robot17(r);
+      } else if (robot == 18) {
+      } else if (robot == 0 && r == 16) {
+        to_state9();
+      } else if (robot == 0 && c.S16(450) > 0 && (r == 13 || r == 11)) {
+        dordray_dash(r);
+      } else if (r >= 11 && r <= 16) {
+        if (other_blocks(r, robot)) {
+          block();
+        } else {
+          dash(r);
+          c.SetW(112, 0);
+          if (in_k(r) && c.B(170) >= 240) {
+            c.SetW(300, 1);
+            c.SetB(284, 4);
+          } else {
+            c.SetH(278, 0);
+          }
+        }
+      } else if (r >= 2 && r <= 10) {
+        if (c.B(577) == 2) {
+          reset();
+          c.SetH(292, 0);
+          reset_rest();
+        }
+        attack(r);
+      }
+    }
+  }
+
+  // Turning.
+  const uint32_t amount = c.W(256);
+  if (!busy()) {
+    c.SetB(4494, 0);
+    c.SetH(8, amount + c.H(8));
+  } else {
+    k.k.r6.u64 = 0;
+    k.k.r5.s64 = int16_t(amount);
+    k.k.r4.s64 = int16_t(c.W(268));
+    k.Call(__imp__sub_821BFF48, c.a);
+    c.SetB(4494, 0);
+  }
+}
+
+void VerifyMoveSubstate0(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821E2328", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821E2328(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        MoveSubstate0(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} b576 {} b577 {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.B(576), c.B(577), c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -2783,4 +3132,13 @@ REX_HOOK_RAW(sub_821F0288) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState12(ctx, base);
   oratan::decomp::State12(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E2328) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E2328(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyMoveSubstate0(ctx, base);
+  oratan::decomp::MoveSubstate0(ctx, base);
 }
