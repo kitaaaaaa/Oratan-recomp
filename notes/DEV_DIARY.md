@@ -742,6 +742,13 @@ substate from a parameter bit, or 255 until +102 reaches the parameters' timer w
 6,000 calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 800 / 1,404
 (a first plant in `sub_821E01E0`'s substate 2-4 parameter changed nothing).
 
+**`sub_821DF6E0` and `sub_821DF440`** (2026-11-02, `robot_states.cpp`, `LandingDash` and `Command`).
+`sub_821DF6E0` picks a dash on landing (15 / 11 / 13) from a button held 253 ticks while its range
+flags are set; `sub_821DF440` is the command states 15 and 19 read: specials (15 / 11 / 13, with
++588 0 / 3 and +190 0x4xx or xx04) or an attack (8 / 2 / 5) that `sub_82257F50` allows. Both end
+with the substate-kind refusal (`RefuseByKind`, the same rule as `sub_821DD968`'s). 300 / 18,600
+calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 300 / 600.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

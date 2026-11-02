@@ -49,7 +49,8 @@
 //
 // sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160, sub_821E01E0,
 // sub_821DF990: small helpers (MotionFlags, TurnTarget, SpeedByAngle,
-// AddTo112, AddTo112BySubstate, AttackFlag4494).
+// AddTo112, AddTo112BySubstate, AttackFlag4494); sub_821DF6E0 (LandingDash) and
+// sub_821DF440 (Command).
 //
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
@@ -3539,6 +3540,92 @@ void AttackFlag4494(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// The substate kind's refusal (kSubstateKinds): kinds 2, 5 and 8 wait for
+// +460, +458 and +462.
+uint32_t RefuseByKind(const Control& c, uint8_t* base, uint32_t result) {
+  const int32_t kind = int32_t(*game::GuestPtr<be<uint32_t>>(base, kSubstateKinds + result * 4));
+  if (kind == 2) return c.H(460) == 0 ? result : 0;
+  if (kind == 5 && c.H(458) != 0) return 0;
+  if (kind == 8 && c.H(462) != 0) return 0;
+  return result;
+}
+
+// sub_821DF6E0(control): on landing, a dash (15 / 11 / 13) for a button held
+// 253 ticks (+169, +167, +168) while its range flags (+400) are set.
+void LandingDash(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  const uint32_t ranges = c.W(400);
+  uint32_t r = 0;
+  if (c.B(169) >= 253 && (ranges & 0x30) != 0) {
+    r = 15;
+  } else if (c.B(167) >= 253 && (ranges & 3) != 0) {
+    r = 11;
+  } else if (c.B(168) >= 253 && (ranges & 0xC) != 0) {
+    r = 13;
+  }
+  ctx.r3.u64 = RefuseByKind(c, base, r);
+}
+
+// sub_821DF440(control, allow_169, specials, long_hold): the command states
+// 15 and 19 read. The buttons count as held when their timers (+167 / +168
+// / +169) are set (held 255 ticks with long_hold). With specials, while
+// +588 is 0 or 3 and +190 is 0x4xx or xx04, a timer at 253 or more gives
+// 15 / 11 / 13 (only robot 5's +169 while Game +24932 is set); without
+// allow_169 that and +169 are ignored. Then 8 / 2 / 5 for +169 / +167 /
+// +168 when sub_82257F50 allows the weapon and the robot isn't in that
+// substate already; the result passes RefuseByKind.
+void Command(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 160;
+  const uint32_t allow_169 = ctx.r4.u32, specials = ctx.r5.u32;
+  const int32_t long_hold = ctx.r6.s32;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const uint32_t b167 = c.B(167), b168 = c.B(168), b169 = c.B(169);
+  const auto held = [&](uint32_t t) { return long_hold == 0 ? t != 0 : t == 255; };
+  const bool h167 = held(b167), h168 = held(b168);
+  bool h169 = held(b169);
+  bool dash15 = false, dash11 = false, dash13 = false;
+  const uint32_t w190 = c.H(190);
+  if (specials != 0 && (c.W(588) == 0 || c.W(588) == 3) && ((w190 & 0xFF00) == 1024 || (w190 & 0xFF) == 4)) {
+    if (Control{base, game_address}.W(kGameBusy) != 0) {
+      dash15 = c.B(2) == 5 && b169 >= 253;
+    } else if (b169 >= 253) {
+      dash15 = true;
+    } else if (b167 >= 253) {
+      dash11 = true;
+    } else if (b168 >= 253) {
+      dash13 = true;
+    }
+  }
+  if (allow_169 == 0) {
+    dash15 = false;
+    h169 = false;
+  }
+  const uint32_t r6 = c.H(278) == 1 ? 2 : 0;
+  const auto weapon = [&](uint32_t w, uint32_t result) {
+    k.k.r6.u64 = r6;
+    k.k.r5.u64 = 0;
+    k.k.r4.u64 = w;
+    return k.Call(__imp__sub_82257F50, c.a) != 0 ? result : 0u;
+  };
+  uint32_t r = 0;
+  if (dash15) {
+    r = 15;
+  } else if (h169 && c.H(274) != 8) {
+    r = weapon(2, 8);
+  } else if (dash11) {
+    r = 11;
+  } else if (h167 && c.H(274) != 2) {
+    r = weapon(1, 2);
+  } else if (dash13) {
+    r = 13;
+  } else if (h168 && c.H(274) != 5) {
+    r = weapon(0, 5);
+  }
+  ctx.r3.u64 = RefuseByKind(c, base, r);
+}
+
 // One live check per helper; `result` reads what the helper returns.
 void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
                  void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
@@ -3741,4 +3828,26 @@ REX_HOOK_RAW(sub_821DF990) {
     oratan::decomp::VerifySmall("sub_821DF990", __imp__sub_821DF990, oratan::decomp::AttackFlag4494, ctx, base, false, 100);
   }
   oratan::decomp::AttackFlag4494(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DF6E0) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DF6E0(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DF6E0", __imp__sub_821DF6E0, oratan::decomp::LandingDash, ctx, base, false, 100);
+  }
+  oratan::decomp::LandingDash(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DF440) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DF440(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DF440", __imp__sub_821DF440, oratan::decomp::Command, ctx, base, false, 600);
+  }
+  oratan::decomp::Command(ctx, base);
 }
