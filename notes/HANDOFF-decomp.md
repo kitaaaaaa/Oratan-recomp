@@ -47,8 +47,8 @@ checked against the original before it is committed.
    branches the replay reaches; remove it before committing.
 8. DEV_DIARY entry, commit (the owner allows a commit after each checked step), push.
 
-Never commit the `tests/replays/replay_tick*.bin` dumps (replay drift output; leave them, don't
-delete them). The untested rewrites stay in `src/decomp_untested/`, out of the build, until a
+Never commit the `tests/replays/replay_tick*.bin` dumps: the replay writes one at the first drift
+of a test run (planted bugs, verify mode); delete them once the run is understood (owner, 2026-11-02). The untested rewrites stay in `src/decomp_untested/`, out of the build, until a
 recording checks them. The VR work (`src/vr.*`, SDK patch 0007) is on hold and not committed yet:
 the owner decides when. Always run the game with `--audio_mute=true`.
 
