@@ -42,7 +42,7 @@ def signal(ii):
 
 def find_period(sig, lo=10, hi=500):
     n = len(sig)
-    if n < 2 * lo + 8: return None
+    if n < 2 * lo + 8: return None, 0.0                    # too short to hold two periods: not a loop
     s = sig - sig.mean(0); best = (0, None)
     for k in range(lo, min(hi, n // 2 + 1)):
         a, b = s[:n - k], s[k:]
