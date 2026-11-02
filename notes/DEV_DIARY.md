@@ -666,6 +666,15 @@ the verifier); a control run of the original against itself gave 0; end to end 0
 planted bug gave 1,071. The reference replay is on stage kind 19, so the footstep branches for the
 other stage kinds, stage kind 5's and the +576 == 127 branch don't run there.
 
+**`sub_821F0288`, movement state 12** (2026-11-01, `robot_states.cpp`). In the air: the rise
+(substate 1), attacks in the air (2-10, three parameter groups), dashes in the air (11-16), and
+by +577 / +278 the landing (a sound; state 13 for a dash, else back to the ground), +577 == 3, the
+fall (+278 == 2: states 17, 15, 24-26 or the next substate) and +278 == 4; +28 moves by +64 times
+Game +24940, and while +278 is 2-4 the facing turns by +256. 3,600 calls, 0 mismatches after one
+fix (two sound table addresses); end to end 0 drifting ticks; a planted bug gave 366. Not reached
+in the reference replay: the rise, the dashes in the air, two of the three attack groups and the
+robot specials.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

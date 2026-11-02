@@ -33,6 +33,9 @@
 // or 2-10, or to state 21 (+174 set), state 19 (a class at +164 and flag 256),
 // state 12 (+288 == 12) or the free state.
 //
+// sub_821F0288, state 12: in the air (the rise, attacks and dashes in the
+// air, the landing and the fall); see State12.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -62,6 +65,7 @@
 #include "decomp.h"
 
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <string>
 
@@ -101,6 +105,11 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821F0288);
+REX_EXTERN(__imp__sub_821DEE00);
+REX_EXTERN(__imp__sub_821DFFA8);
+REX_EXTERN(__imp__sub_821DEC58);
+REX_EXTERN(__imp__sub_821DF6E0);
 // The driver's callees, by the names the original calls (some are rewrites).
 REX_EXTERN(sub_822AC098);
 REX_EXTERN(sub_821E8B98);
@@ -2267,6 +2276,440 @@ void VerifyPickSubstate(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+// State 12's end: while +278 is 2-4, +8 turns by +256's sign at the robot's
+// parameter +468 (+472 while +178 or +179 is set).
+void Turn(const Control& c) {
+  const uint32_t s278 = c.H(278);
+  if (s278 < 2 || s278 > 4) return;
+  const Control params{c.base, c.W(76)};
+  const int32_t rate = int32_t(params.W(c.B(178) == 0 && c.B(179) == 0 ? 468 : 472));
+  const int32_t amount = int32_t(c.W(256));
+  if (amount > 0) {
+    c.SetH(8, c.H(8) + int16_t(rate));
+  } else if (amount < 0) {
+    c.SetH(8, c.H(8) + int16_t(-rate));
+  } else {
+    c.SetH(8, c.H(8));
+  }
+}
+
+// sub_821F0288, state 12: in the air. Substate 1 is the rise (or state 24
+// for robot 2 with full gauges and +304 bit 2), substates 2-10 an attack in
+// the air (three groups by the parameters at +3268 / +3364 / +3316), 11-16 a
+// dash in the air (+337 / +4494 from the timer windows at +2144 / +2134 /
+// +2154 in the robot's parameters), and the rest by +577 / +278: the landing
+// (with a sound, to state 13 or back to the ground), +577 == 3, the fall
+// (+278 == 2: state 17, 15, 24-26 or a substate from sub_821DEE00) and
+// +278 == 4 (vertical speed +64 from +172 / +170). Most paths move +28 by
+// +64 times Game +24940; at the end Turn runs.
+void State12(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  const uint32_t frame = ctx.r1.u32 - 192;
+  k.k.r1.u64 = frame;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  const auto data = [&] { return g.W(game::kGameRobotData); };
+  const auto data_word = [&](uint32_t o) { return Control{base, data()}.W(o); };
+  const uint32_t zero = *game::GuestPtr<be<uint32_t>>(base, 0x8200095C);
+  const auto speed = [&](uint32_t table) {
+    k.k.r4.u64 = c.W(248);
+    k.Call(__imp__sub_821DD890, table);
+    SetFloat(c, 372, k.k.f1.f64);
+  };
+  const auto set_580 = [&] { c.SetW(580, c.W(580) | 0x40008000); };
+  const auto fall = [&] {
+    const float y = float(std::fma(double(std::bit_cast<float>(g.W(24940))), double(std::bit_cast<float>(c.W(64))),
+                                   double(std::bit_cast<float>(c.W(28)))));
+    c.SetW(28, std::bit_cast<uint32_t>(y));
+  };
+  const auto sound = [&](uint32_t id, uint32_t table) {
+    k.k.r4.u64 = id;
+    k.k.r5.u64 = table;
+    const uint32_t r = k.Call(__imp__sub_821A5C20, frame + 96);
+    k.Call(__imp__sub_821ED918, c.a, r);
+  };
+  const auto pick_next = [&] {
+    k.k.r5.u64 = 0;
+    return k.Call(__imp__sub_821DEE00, c.a, 1) & 0xFFFF;
+  };
+  // Robot 2's special (state 24): gauges full, +180 255 and +304 bit 2.
+  const auto robot2_special = [&] {
+    return c.B(2) == 2 && c.B(180) == 255 && c.W(404) == 0 && c.W(408) == 0 && c.W(412) == 0 &&
+           (c.H(304) & 2) != 0 && (g.B(24916) != 0 || g.B(24909) != 5);
+  };
+  const auto to_state24 = [&] {
+    c.SetH(274, 0);
+    c.SetB(286, 0);
+    c.SetH(292, 0);
+    c.SetH(272, 24);
+  };
+  // A class move (state 15) from +164 while flag 256 is set.
+  const auto class_move_ready = [&] {
+    return c.B(164) != 255 && (c.W(400) & 0x100) != 0 && (c.H(304) & 1) == 0 &&
+           !(c.a == game_address + kControl2 && g.B(53014) != 0) &&
+           !(c.a == game_address + 25020 && g.B(53013) != 0) && c.B(2) != 14;
+  };
+  const auto class_move = [&](bool set_284) {
+    const uint32_t cls = c.B(164);
+    for (uint32_t o : {292u, 290u, 288u, 274u}) c.SetH(o, 0);
+    c.SetB(286, 0);
+    c.SetH(272, 15);
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, cls)))));
+    c.SetW(588, uint32_t(int32_t(int16_t(Table(base, kMoveTable1, cls)))));
+    c.SetH(12, Table(base, kMoveTable2, cls));
+    c.SetH(20, Table(base, kMoveTable3, cls));
+    c.SetH(8, c.H(4490));
+    k.Call(__imp__sub_821DD230, c.a, 64);
+    if (set_284) c.SetB(284, 8);
+    c.SetB(336, 18);
+    c.SetH(598, 0);
+    c.SetH(14, 0);
+    c.SetH(304, c.H(304) | 4);
+    c.SetH(16, c.H(4490) + c.H(20));
+    c.SetH(306, c.B(164));
+    k.Call(__imp__sub_821E0160, c.a, 2);
+  };
+
+  c.SetH(338, 0);
+  c.SetB(576, 16);
+  c.SetB(337, 0);
+  c.SetB(4494, 0);
+  const uint32_t sub = c.H(274);
+  if (c.H(312) != 0) {
+    c.SetB(576, 0);
+    c.SetB(577, 0);
+  } else if (sub == 1) {
+    // The rise.
+    c.SetB(440, 0);
+    c.SetH(438, 0);
+    set_580();
+    if (g.W(kGameBusy) != 0) {
+      c.SetB(576, 17);
+      speed(data() + 864);
+      const bool done = k.Call(__imp__sub_821DD180, c.a, 1) != 0;
+      const uint32_t b577 = c.B(577);
+      if (done) {
+        if (b577 == 0) {
+          c.SetH(292, 0);
+          c.SetB(286, 1);
+        } else {
+          if (b577 == 2) {
+            c.SetH(274, 0);
+            c.SetH(272, 12);
+            c.SetW(264, 0);
+            c.SetB(286, c.H(278) == 2 ? 1 : 2);
+          }
+          c.SetH(292, 0);
+        }
+      } else if (b577 == 1) {
+        c.SetB(441, 0);
+        const uint32_t next = pick_next();
+        c.SetH(274, next);
+        if (next != 0) {
+          c.SetB(286, 0);
+          c.SetH(292, 0);
+          c.SetH(296, 0);
+          c.SetH(304, c.H(304) | 1);
+        } else {
+          c.SetH(274, 1);
+        }
+      }
+    } else {
+      c.SetB(576, 16);
+      speed(data() + 864);
+      c.SetB(441, 0);
+      if (robot2_special()) {
+        to_state24();
+        c.SetH(438, 0);
+        c.SetH(276, 0);
+        c.SetW(64, zero);
+        sound(0x719A9, 0x820280E8);
+      } else {
+        const uint32_t next = pick_next();
+        c.SetH(274, next);
+        if (next != 0) {
+          c.SetB(286, 0);
+          c.SetH(292, 0);
+          c.SetH(296, 0);
+          c.SetH(438, 0);
+          c.SetH(304, c.H(304) | 1);
+        } else if (c.H(278) == 2) {
+          c.SetB(577, 1);
+          c.SetH(274, 1);
+        } else {
+          c.SetH(274, 0);
+          c.SetB(577, 2);
+        }
+      }
+    }
+    if (class_move_ready()) class_move(true);
+    fall();
+  } else if (sub >= 2 && sub <= 10) {
+    // An attack in the air.
+    uint32_t id, params;
+    if (In(sub, {4, 7, 10})) {
+      id = 0x68696A, params = 3316;
+    } else if (In(sub, {3, 6, 9})) {
+      id = 0x58595A, params = 3364;
+    } else {
+      id = 0x404142, params = 3268;
+    }
+    k.k.r5.u64 = data() + params;
+    k.Call(__imp__sub_821DFFA8, c.a, id);
+    k.k.r4.u64 = data() + params;
+    k.Call(__imp__sub_821DF990, c.a);
+    const uint32_t s = c.H(274);
+    uint32_t table = 864;
+    if (In(s, {5, 7, 6})) {
+      table = 1184;
+    } else if (In(s, {2, 4, 3})) {
+      table = 1164;
+    } else if (In(s, {8, 10, 9})) {
+      table = 1204;
+    }
+    speed(data() + table);
+    set_580();
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      const uint32_t b577 = c.B(577);
+      if (b577 == 0) {
+        c.SetB(286, 1);
+        k.Call(__imp__sub_821E01E0, c.a);
+        c.SetH(292, 0);
+      } else if (b577 == 2) {
+        c.SetH(290, 0);
+        c.SetH(274, 0);
+        c.SetH(272, 12);
+        c.SetW(300, 4);
+        c.SetB(286, 1);
+        c.SetH(292, 0);
+      } else if (k.Call(__imp__sub_821DEC58, c.a) != 0) {
+        c.SetH(292, 0);
+      } else {
+        const uint32_t next = c.H(290);
+        if (next == 0 || next == 1) {
+          c.SetB(286, 2);
+          c.SetH(292, 0);
+        } else {
+          if (next != c.H(274)) {
+            c.SetH(274, next);
+            c.SetH(438, 0);
+            c.SetH(296, 0);
+            c.SetB(440, c.B(440) + 1);
+            k.Call(__imp__sub_821E01E0, c.a);
+          }
+          c.SetH(292, 0);
+          c.SetH(290, 1);
+        }
+      }
+    }
+  } else if (sub >= 11 && sub <= 16) {
+    // A dash in the air.
+    const uint32_t params = c.W(76);
+    uint32_t window;
+    if (sub <= 12) {
+      c.SetB(576, 140);
+      window = params + 2144;
+    } else if (sub <= 14) {
+      c.SetB(576, 141);
+      window = params + 2134;
+    } else {
+      c.SetB(576, 142);
+      window = params + 2154;
+    }
+    set_580();
+    c.SetW(584, 2);
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      const uint32_t b577 = c.B(577);
+      if (b577 == 0) {
+        c.SetB(286, 1);
+        k.Call(__imp__sub_821E01E0, c.a);
+      } else if (b577 == 2) {
+        c.SetH(290, 1);
+        c.SetH(274, 1);
+        c.SetH(272, 12);
+        c.SetH(278, 4);
+        c.SetB(286, 1);
+      } else {
+        c.SetB(286, 2);
+      }
+      c.SetH(292, 0);
+    }
+    if (c.B(577) == 1) {
+      const Control w{base, window};
+      const int32_t t = c.S16(102);
+      uint32_t flag = int32_t(w.H(0)) <= t && int32_t(w.H(2)) > t ? 1 : 0;
+      if (int32_t(w.H(4)) <= t && int32_t(w.H(6)) > t) flag |= 2;
+      c.SetB(337, flag);
+      c.SetB(4494, t >= int32_t(w.H(6)) ? 255 : 0);
+    }
+  } else if (c.B(577) == 0) {
+    // Landing.
+    const uint32_t next = k.Call(__imp__sub_821DF6E0, c.a);
+    if (int32_t(next) != 0) c.SetH(290, next);
+    c.SetH(274, 0);
+    c.SetW(584, 2);
+    c.SetH(304, c.H(304) & ~1u);
+    if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      if (c.B(2) == 8 || c.B(2) == 9) {
+        sound(0x1105A9, 0x820280D0);
+      } else {
+        sound(0x1005A9, 0x820280DC);
+      }
+      const uint32_t n = c.H(290);
+      if (c.B(173) <= 7 && n >= 11 && n <= 16) {
+        // A dash on landing: state 13.
+        c.SetH(274, n);
+        c.SetH(272, 13);
+        c.SetH(278, 2);
+        set_580();
+        c.SetH(304, c.H(304) & ~6u);
+        c.SetB(286, 0);
+        c.SetH(292, 0);
+        c.SetW(64, data_word(3656));
+        c.SetH(14, 0);
+        c.SetH(16, c.H(8));
+        c.SetB(336, 14);
+        k.Call(__imp__sub_821E0160, c.a, 5);
+      } else {
+        c.SetH(278, 2);
+        c.SetH(292, 0);
+        c.SetH(290, 0);
+        c.SetB(286, 1);
+        c.SetH(304, c.H(304) & ~6u);
+        set_580();
+        c.SetB(336, 3);
+        c.SetW(64, data_word(3644));
+        k.k.r4.u64 = 3;
+        c.SetW(584, k.Call(__imp__sub_821DD1E0, 0));
+        c.SetH(12, 0);
+      }
+    }
+    c.SetW(372, zero);
+  } else if (c.B(577) == 3) {
+    c.SetH(278, 0);
+    if (k.Call(__imp__sub_821E1930, c.a) != 0) {
+      c.SetW(584, 0);
+      for (uint32_t o : {594u, 598u, 596u}) c.SetH(o, 0);
+    } else if (k.Call(__imp__sub_821DD180, c.a, 1) != 0) {
+      for (uint32_t o : {272u, 290u, 274u}) c.SetH(o, 0);
+      c.SetB(286, 0);
+      c.SetH(292, 0);
+      c.SetW(300, 0);
+      c.SetW(580, c.W(580) & ~0x04000000u);
+    }
+    c.SetW(584, 0);
+    for (uint32_t o : {598u, 594u, 12u}) c.SetH(o, 0);
+    c.SetW(372, zero);
+  } else if (c.H(278) == 2) {
+    // The fall.
+    const uint32_t next = pick_next();
+    c.SetB(577, 1);
+    if (c.B(170) != 0 && (c.H(304) & 4) == 0) {
+      c.SetH(274, 0);
+      c.SetH(272, 17);
+      c.SetH(290, 0);
+      c.SetB(286, 4);
+      c.SetH(292, 0);
+      c.SetW(580, (c.W(580) & ~0x04000000u) | 0x8000);
+      c.SetW(64, data_word(3652) ^ 0x80000000u);
+      k.Call(__imp__sub_821E0160, c.a, 6);
+      Turn(c);
+      return;
+    }
+    if (class_move_ready()) {
+      class_move(false);
+      Turn(c);
+      return;
+    }
+    const uint32_t robot = c.B(2);
+    c.SetH(438, 0);
+    c.SetB(441, 0);
+    if (robot2_special()) {
+      to_state24();
+      c.SetH(276, 0);
+      c.SetW(64, zero);
+      sound(0x719A9, 0x820280E8);
+    } else if (next != 0) {
+      c.SetH(304, c.H(304) | 1);
+      const auto special = [&](uint32_t state) {
+        c.SetH(274, 0);
+        c.SetW(584, 0);
+        c.SetH(272, state);
+        c.SetH(276, 0);
+        c.SetB(286, 0);
+        c.SetH(292, 0);
+        c.SetH(4492, 0);
+      };
+      if (In(robot, {4, 11, 12}) && next == 8 && (c.H(304) & 2) != 0 && c.B(3322) == 0 && c.H(450) == 0) {
+        special(25);
+      } else if (robot == 14 && g.W(kGameBusy) == 0 && c.H(190) == 0 && next == 9 && c.W(412) == 0) {
+        c.SetB(441, 0);
+        to_state24();
+        c.SetW(64, zero);
+        c.SetH(438, 0);
+        c.SetH(276, 0);
+        c.SetB(336, 0);
+      } else if (In(robot, {1, 5, 16}) && (c.W(2192) & 0xF) == 15 && next == 9) {
+        special(26);
+      } else {
+        c.SetH(290, next);
+      }
+    }
+    if ((c.H(304) & 6) == 0 && c.B(172) == 255) {
+      c.SetH(304, c.H(304) | 2);
+      c.SetW(64, data_word(3644));
+      c.SetH(292, 0);
+      c.SetB(284, 6);
+    }
+    fall();
+    speed(data() + 864);
+  } else if (c.H(278) == 4) {
+    c.SetB(577, 2);
+    const uint32_t b172 = c.B(172);
+    if (b172 > 240 && b172 <= 248) {
+      const double up = std::fma(double(int32_t(248 - b172)), GuestDouble(base, 0x82017340),
+                                 double(std::bit_cast<float>(c.W(64))));
+      const float v = float(up);
+      c.SetW(64, std::bit_cast<uint32_t>(v));
+      if (double(v) > GuestDouble(base, 0x820280C8)) c.SetW(64, *game::GuestPtr<be<uint32_t>>(base, 0x820280C0));
+    }
+    if ((c.H(304) & 8) == 0 && c.B(170) > 240) {
+      const double down = -std::fma(double(int32_t(256 - c.B(170))), GuestDouble(base, 0x820173B0),
+                                    -double(std::bit_cast<float>(c.W(64))));
+      c.SetW(64, std::bit_cast<uint32_t>(float(down)));
+    }
+    fall();
+    speed(data() + 864);
+  }
+  Turn(c);
+}
+
+void VerifyState12(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821F0288", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821F0288(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        State12(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} b577 {} s278 {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(274), c.B(577), c.H(278), c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -2331,4 +2774,13 @@ REX_HOOK_RAW(sub_821E1930) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyPickSubstate(ctx, base);
   oratan::decomp::PickSubstateHook(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821F0288) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821F0288(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState12(ctx, base);
+  oratan::decomp::State12(ctx, base);
 }
