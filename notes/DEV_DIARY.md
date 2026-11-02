@@ -708,6 +708,14 @@ original (`sub_821DFDD8`'s result stays in r6). Checked only in verify mode, whe
 times after the known verify-mode drift (tick 12012): 0 mismatches; end to end 0 drifting ticks;
 a planted bug in the speed gave 90 of 90 (one in `sub_821DD230`'s argument, 2 -> 3, changed nothing).
 
+**`sub_821DD2B0`, `sub_821DD968`'s record** (2026-11-01, `robot_states.cpp`, `FillChoiceRecord`).
+Fills the record on the caller's stack: +8 / +12 from the hold timers +178 / +179, +4 and the
+three parameter records (+40 / +44 / +48) by +278 and state 1, the six branch flags from the hold
+timers +167 / +168 / +169 and the range flags (+400), and, while +441 is set, the current substate
+again at +0 if its hold limit allows and `sub_82257F50` agrees. The verifier keeps one check per
+record address (the record is on the stack). About 184,000 calls, 0 mismatches, first try; end to
+end 0 drifting ticks; a planted bug gave 45.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

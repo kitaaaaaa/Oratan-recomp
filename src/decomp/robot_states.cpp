@@ -45,6 +45,8 @@
 // sub_821E4BC0: sub_821E4D58's other substates while +278 isn't 1; see
 // MoveOtherSubstates.
 //
+// sub_821DD2B0: fills sub_821DD968's record; see FillChoiceRecord.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -76,6 +78,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <string>
 
 #include <fmt/format.h>
@@ -3252,6 +3255,152 @@ void VerifyMoveOtherSubstates(PPCContext& ctx, uint8_t* base) {
       10);
 }
 
+
+// sub_821DD2B0(control, r4, mode, r6, record): fills sub_821DD968's record.
+// +8 / +12 from the hold timers +178 / +179 (held past 243: 1, held: -1,
+// else 0; with r6 set and not (mode 0 and +441 clear): held 1), cleared in
+// state 1; +4 is 2 while +278 is 1 (else 0) and +40 / +44 / +48 point at
+// parameter records of the robot by +278 and state 1. The six flags: +20 /
+// +16 / +24 from the hold timers +167 / +168 / +169 (held, or held 255 ticks,
+// by r6 and +12), and while r4 is set (and +178 isn't held past 243)
+// +32 / +28 / +36 from the same timers inside 250-253 / 253 when the range
+// flags (+400) are set. While +441 is set in mode 0 with no substate
+// waiting (+290), the current substate (2-10) is chosen again at +0 if its
+// hold limit hasn't passed and sub_82257F50 agrees.
+void FillChoiceRecord(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 112;
+  const Control r{base, ctx.r7.u32};
+  const int32_t mode = ctx.r5.s32;
+  int32_t r6 = ctx.r6.s32;
+  uint32_t use_ranges = ctx.r4.u32;
+  r.SetW(0, 0);
+  if (r6 == 0 || (mode == 0 && c.B(441) == 0)) {
+    r6 = 0;
+    const auto timer = [&](uint32_t o) -> uint32_t {
+      const uint32_t t = c.B(o);
+      return t > 243 ? 1 : t != 0 ? uint32_t(-1) : 0;
+    };
+    if (c.B(178) > 243) use_ranges = 0;
+    r.SetW(8, timer(178));
+    r.SetW(12, timer(179));
+  } else {
+    if (c.B(178) != 0) use_ranges = 0;
+    r.SetW(8, c.B(178) != 0 ? 1 : 0);
+    r.SetW(12, c.B(179) != 0 ? 1 : 0);
+  }
+  const Control p{base, c.W(76)};
+  const bool state1 = c.H(272) == 1;
+  if (state1) {
+    use_ranges = ctx.r4.u32;
+    r.SetW(12, 0);
+    r.SetW(8, 0);
+  }
+  if (c.H(278) == 1) {
+    r.SetW(40, p.a + (state1 ? 2308 : 2260));
+    r.SetW(44, p.a + 2500);
+    r.SetW(4, 2);
+    r.SetW(48, p.a + 2404);
+  } else {
+    r.SetW(40, p.a + (state1 ? 2212 : 2164));
+    r.SetW(44, p.a + 2452);
+    r.SetW(4, 0);
+    r.SetW(48, p.a + 2356);
+  }
+  for (uint32_t o : {24u, 20u, 16u, 36u, 32u, 28u}) r.SetW(o, 0);
+
+  const auto held = [&] {
+    if (c.B(167) != 0) r.SetW(20, 1);
+    if (c.B(168) != 0) r.SetW(16, 1);
+    if (c.B(169) != 0) r.SetW(24, 1);
+  };
+  const auto held_long = [&] {
+    if (c.B(167) == 255) r.SetW(20, 1);
+    if (c.B(168) == 255) r.SetW(16, 1);
+    if (c.B(169) == 255) r.SetW(24, 1);
+  };
+  const bool quiet = mode >= 0 && c.B(441) == 0;
+  if (r6 > 0) {
+    if (!quiet) held();
+  } else if (r6 == 0 || r.W(12) != 0) {
+    held_long();
+  } else if (!quiet) {
+    held();
+  }
+
+  if (use_ranges != 0) {
+    const uint32_t ranges = c.W(400);
+    if (ranges & 3) {
+      r.SetW(20, 0);
+      if (c.B(167) >= 250 && c.B(167) < 254) r.SetW(32, 1);
+    }
+    if (ranges & 0xC) {
+      r.SetW(16, 0);
+      if (c.B(168) >= 250 && c.B(168) < 254) r.SetW(28, 1);
+    }
+    if (ranges & 0x30) {
+      r.SetW(24, 0);
+      if (c.B(169) == 253) r.SetW(36, 1);
+    }
+  }
+
+  if (c.B(441) == 0 || mode != 0 || c.H(290) != 0) return;
+  // The current substate again: its record, hold limit offset, weapon and variant.
+  struct Again {
+    uint32_t record, hold, weapon, variant;
+  };
+  Again a;
+  switch (c.H(274)) {
+    case 8: a = {40, 44, 2, 0}; break;
+    case 9: a = {44, 44, 2, 1}; break;
+    case 10: a = {48, 44, 2, 2}; break;
+    case 2: a = {40, 28, 1, 0}; break;
+    case 3: a = {44, 28, 1, 1}; break;
+    case 4: a = {48, 28, 1, 2}; break;
+    case 5: a = {40, 12, 0, 0}; break;
+    case 6: a = {40, 12, 0, 1}; break;
+    case 7: a = {40, 12, 0, 2}; break;
+    default: return;
+  }
+  const uint32_t sub = c.H(274);
+  if (int32_t(Control{base, r.W(a.record)}.H(a.hold)) <= c.S16(438)) return;
+  k.k.r6.u64 = r.W(4);
+  k.k.r5.u64 = a.variant;
+  k.k.r4.u64 = a.weapon;
+  if (k.Call(__imp__sub_82257F50, c.a) != 0) r.SetW(0, sub);
+}
+
+void VerifyFillChoiceRecord(PPCContext& ctx, uint8_t* base) {
+  // The record is on the caller's stack, so each record address gets its own
+  // verifier with the record declared.
+  static std::map<uint32_t, Verifier*> verifiers;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  Verifier*& verifier = verifiers[ctx.r7.u32];
+  if (!verifier) {
+    verifier = new Verifier("sub_821DD2B0", base, {{game_address, 0xD000, "game"}, {ctx.r7.u32, 52, "record"}});
+  }
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821DD2B0(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        FillChoiceRecord(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} state {} sub {} mode {} r6 {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(272), c.H(274), ctx.r5.s32, ctx.r6.s32);
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -3352,4 +3501,13 @@ REX_HOOK_RAW(sub_821E4BC0) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyMoveOtherSubstates(ctx, base);
   oratan::decomp::MoveOtherSubstates(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD2B0) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD2B0(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyFillChoiceRecord(ctx, base);
+  oratan::decomp::FillChoiceRecord(ctx, base);
 }
