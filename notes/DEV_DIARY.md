@@ -694,6 +694,12 @@ handler, gave none: that handler changes nothing here). `sub_82242528`, its coun
 +24932 is set, is written (`robot_move_number_busy.cpp`) but never runs in the reference replay, so
 it is left out of the build until a recording reaches it.
 
+**`sub_821E1FF0`, a jump or a class move** (2026-11-01, `robot_states.cpp`, `JumpOrClassMove`). Run
+by `sub_821E4D58` after its substate handler: state 12 (a jump) when +172 is 255 (robot 6 not from
+substates 8-10), or state 19 with the move tables for the class at +164 while flag 256 is set;
+while Game +24932 is set only the class move, through `sub_821DD230` / `sub_821C01D8`. 2,400 calls,
+0 mismatches, first try; end to end 0 drifting ticks; a planted bug in the jump gave 27.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

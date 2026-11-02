@@ -39,6 +39,9 @@
 // sub_821E2328: substate 0 of the state sub_821E4D58 handles; see
 // MoveSubstate0.
 //
+// sub_821E1FF0: after sub_821E4D58's substate handler, a jump (state 12) or
+// a class move (state 19); see JumpOrClassMove.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -108,6 +111,7 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821E1FF0);
 REX_EXTERN(__imp__sub_821E2328);
 REX_EXTERN(__imp__sub_822583A8);
 REX_EXTERN(__imp__sub_821F0288);
@@ -3059,6 +3063,104 @@ void VerifyMoveSubstate0(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// sub_821E1FF0, run by sub_821E4D58 after its substate handler: a jump
+// (state 12 substate 0) when +172 is 255, or a class move (state 19, the
+// move tables indexed by +164) while flag 256 is set. Robot 6 doesn't jump
+// out of substates 8-10. While Game +24932 is set only the class move is
+// checked, without the +170 / +278 conditions.
+void JumpOrClassMove(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 112;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const bool busy = Control{base, game_address}.W(kGameBusy) != 0;
+  // State 19 with the move for the class at +164; returns the robot.
+  const auto class_move = [&] {
+    const uint32_t cls = c.B(164);
+    const uint32_t robot = c.B(2);
+    c.SetH(288, 0);
+    c.SetH(290, 0);
+    c.SetH(274, 0);
+    c.SetH(272, 19);
+    c.SetW(584, uint32_t(int32_t(int16_t(Table(base, kMoveTable0, cls)))));
+    c.SetW(588, uint32_t(int32_t(int16_t(Table(base, kMoveTable1, cls)))));
+    c.SetH(12, Table(base, kMoveTable2, cls));
+    c.SetH(20, Table(base, kMoveTable3, cls));
+    c.SetH(598, 0);
+    c.SetH(292, 0);
+    c.SetW(300, 0);
+    return In(robot, {7, 8, 4, 11, 12}) && c.W(588) == 2;
+  };
+
+  if (!busy) {
+    if (c.B(576) != 4) c.SetB(336, 0);
+    if (c.B(172) == 255 && (c.B(4494) & 2) == 0) {
+      if (c.B(2) == 6 && In(c.H(274), {8, 9, 10})) return;
+      // The jump.
+      for (uint32_t o : {288u, 290u}) c.SetH(o, 0);
+      c.SetH(272, 12);
+      c.SetH(274, 0);
+      c.SetB(286, 0);
+      c.SetH(292, 0);
+      c.SetW(300, 0);
+      c.SetB(0, 0);
+      c.SetW(584, 2);
+      for (uint32_t o : {12u, 598u, 594u}) c.SetH(o, 0);
+      k.Call(__imp__sub_821E0160, c.a, 5);
+      return;
+    }
+    if (c.B(164) == 255 || c.B(170) != 0 || (c.B(4494) & 4) != 0 || (c.W(400) & 0x100) == 0 || c.H(278) != 0) {
+      return;
+    }
+    const bool still = class_move() || c.B(2) == 17;
+    c.SetB(286, still ? 0 : 1);
+    c.SetH(278, 0);
+    k.Call(__imp__sub_821DD230, c.a, 8);
+    c.SetB(284, 4);
+    c.SetH(14, 0);
+    c.SetH(18, 0);
+    c.SetH(306, c.B(164));
+    c.SetH(16, c.H(8) + c.H(20));
+  } else {
+    if (c.B(164) == 255 || (c.B(4494) & 4) != 0 || (c.W(400) & 0x100) == 0) return;
+    c.SetB(286, class_move() ? 0 : 1);
+    c.SetW(300, 0);
+    const uint32_t r = k.Call(__imp__sub_821DD230, c.a, 1024);
+    k.k.r4.u64 = c.H(20);
+    k.Call(__imp__sub_821C01D8, r);
+    c.SetB(284, 4);
+    c.SetH(306, c.B(164));
+  }
+  k.Call(__imp__sub_821E0160, c.a, 2);
+  c.SetB(336, 0);
+}
+
+void VerifyJumpOrClassMove(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821E1FF0", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821E1FF0(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        JumpOrClassMove(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} sub {} b172 {} b164 {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(274), c.B(172), c.B(164), c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -3141,4 +3243,13 @@ REX_HOOK_RAW(sub_821E2328) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyMoveSubstate0(ctx, base);
   oratan::decomp::MoveSubstate0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E1FF0) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E1FF0(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyJumpOrClassMove(ctx, base);
+  oratan::decomp::JumpOrClassMove(ctx, base);
 }
