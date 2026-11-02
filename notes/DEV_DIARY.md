@@ -756,6 +756,12 @@ group's limit and `sub_821DFBA0` agrees, fires the weapon through `sub_822583A8`
 `sub_821DEC58` (whether the air attack can fire again) was written too but runs only a couple of
 times in the reference replay, so it was left out.
 
+**`sub_821DEE00`, the next attack in the air** (2026-11-02, `robot_states.cpp`, `NextAirAttack`).
+From the hold timers (+178 / +179 for the variant, +167 / +168 / +169 for the weapon; with mode, a
+button held under 253 ticks blocks the plain variant) it picks substates 10-8, 4-2 or 7-5 if the
+robot isn't in that substate and `sub_82257F50` agrees; the result passes `RefuseByKind`. 3,500
+calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 12.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

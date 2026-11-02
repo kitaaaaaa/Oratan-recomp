@@ -50,7 +50,7 @@
 // sub_821DD180, sub_821DD230, sub_821DD890, sub_821E0160, sub_821E01E0,
 // sub_821DF990: small helpers (MotionFlags, TurnTarget, SpeedByAngle,
 // AddTo112, AddTo112BySubstate, AttackFlag4494); sub_821DF6E0 (LandingDash) and
-// sub_821DF440 (Command), sub_821DFFA8 (AirAttack).
+// sub_821DF440 (Command), sub_821DFFA8 (AirAttack), sub_821DEE00 (NextAirAttack).
 //
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
@@ -3676,6 +3676,68 @@ void AirAttack(PPCContext& ctx, uint8_t* base) {
   c.SetH(438, c.H(438) + 1);
 }
 
+// sub_821DEE00(control, allow_169, mode): the next attack in the air. The
+// hold timers +178 / +179 give a / b (1 while held; 0 while the side's Game
+// flag 53013 / 53014 is set); with mode, a button (+167 / +168 / +169) that
+// is held counts, and one held under 253 ticks turns a / b from 0 to -1;
+// without mode only buttons held 253 ticks count. +169 (if allowed), +167,
+// +168 pick weapon 2 / 1 / 0; then variant 2 if a > 0, 1 if b > 0, 0 if
+// neither is negative, each only if the robot isn't in that substate and
+// sub_82257F50 agrees. The result passes RefuseByKind.
+void NextAirAttack(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 128;
+  const uint32_t allow_169 = ctx.r4.u32, mode = ctx.r5.u32;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  int32_t a = c.B(178) != 0 ? 1 : 0, b = c.B(179) != 0 ? 1 : 0;
+  if ((c.a == game_address + kControl2 && g.B(53014) != 0) || (c.a == game_address + 25020 && g.B(53013) != 0)) {
+    a = 0;
+    b = 0;
+  }
+  bool h167 = false, h168 = false, h169 = false;
+  if (mode != 0) {
+    const auto count = [&](uint32_t t, bool& held) {
+      if (t == 0) return;
+      held = true;
+      if (t < 253) {
+        if (b == 0) b = -1;
+        if (a == 0) a = -1;
+      }
+    };
+    count(c.B(167), h167);
+    count(c.B(168), h168);
+    count(c.B(169), h169);
+  } else {
+    h167 = c.B(167) >= 253;
+    h168 = c.B(168) >= 253;
+    h169 = c.B(169) >= 253;
+  }
+  // Substates s2 / s1 / s0 for variants 2 / 1 / 0 of the weapon.
+  const auto pick = [&](uint32_t weapon, uint32_t s2, uint32_t s1, uint32_t s0) -> uint32_t {
+    const auto fire = [&](uint32_t variant, uint32_t sub) {
+      k.k.r6.u64 = 1;
+      k.k.r5.u64 = variant;
+      k.k.r4.u64 = weapon;
+      return k.Call(__imp__sub_82257F50, c.a) != 0 ? sub : 0u;
+    };
+    if (a > 0 && c.H(274) != s2) return fire(2, s2);
+    if (b > 0 && c.H(274) != s1) return fire(1, s1);
+    if (b < 0 || a < 0 || c.H(274) == s0) return 0;
+    return fire(0, s0);
+  };
+  uint32_t r = 0;
+  if (allow_169 != 0 && h169) {
+    r = pick(2, 10, 9, 8);
+  } else if (h167) {
+    r = pick(1, 4, 3, 2);
+  } else if (h168) {
+    r = pick(0, 7, 6, 5);
+  }
+  ctx.r3.u64 = RefuseByKind(c, base, r);
+}
+
 // One live check per helper; `result` reads what the helper returns.
 void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
                  void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
@@ -3911,4 +3973,15 @@ REX_HOOK_RAW(sub_821DFFA8) {
     oratan::decomp::VerifySmall("sub_821DFFA8", __imp__sub_821DFFA8, oratan::decomp::AirAttack, ctx, base, false, 100);
   }
   oratan::decomp::AirAttack(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DEE00) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DEE00(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DEE00", __imp__sub_821DEE00, oratan::decomp::NextAirAttack, ctx, base, false, 100);
+  }
+  oratan::decomp::NextAirAttack(ctx, base);
 }
