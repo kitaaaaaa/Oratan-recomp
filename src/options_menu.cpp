@@ -67,11 +67,20 @@ int CurrentMsaa() {
   return msaa == 4 ? 0 : msaa;  // 4x is the game's own setting
 }
 
+// System Link (SDK system_link, player_name): the console's network identity
+// is made at startup, so changes apply on restart.
+int g_system_link_at_startup = -1;
+std::string g_player_name_at_startup;
+
+constexpr size_t kMaxPlayerName = 15;  // a gamertag's length
+
 }  // namespace
 
 void RememberStartupSettings() {
   g_height_at_startup = CurrentHeight();
   g_msaa_at_startup = CurrentMsaa();
+  g_system_link_at_startup = rex::cvar::Query<bool>("system_link") ? 1 : 0;
+  g_player_name_at_startup = rex::cvar::GetFlagByName("player_name");
 }
 
 OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
@@ -82,6 +91,12 @@ OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path
 
 void OptionsDialog::Save() {
   if (!config_path_.empty()) SaveSettings(config_path_);
+}
+
+void OptionsDialog::RestartNotice() {
+  ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Restart the game to apply.");
+  ImGui::SameLine();
+  if (restart_ && ImGui::Button("Restart now")) restart_({});
 }
 
 void OptionsDialog::OnDraw(ImGuiIO& io) {
@@ -162,9 +177,7 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
 
   if ((g_height_at_startup >= 0 && CurrentHeight() != g_height_at_startup) ||
       (g_msaa_at_startup >= 0 && height != 0 && CurrentMsaa() != g_msaa_at_startup)) {
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Restart the game to apply.");
-    ImGui::SameLine();
-    if (restart_ && ImGui::Button("Restart now")) restart_({});
+    RestartNotice();
   }
 
   // Display mode
@@ -231,6 +244,39 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
                                    : "Robot 1's view, and the LIVE MONITOR camera.");
 
   DrawNetplay();
+
+  // System Link (LAN)
+  ImGui::Separator();
+  bool system_link = rex::cvar::Query<bool>("system_link");
+  if (ImGui::Checkbox("System Link on the local network (experimental)", &system_link)) {
+    rex::cvar::SetFlagByName("system_link", system_link ? "true" : "false");
+    Save();
+  }
+  ImGui::BeginDisabled(!system_link);
+  static char player_name[kMaxPlayerName + 1] = {};
+  static bool player_name_loaded = false;
+  if (!player_name_loaded) {
+    const std::string current = rex::cvar::GetFlagByName("player_name");
+    std::snprintf(player_name, sizeof(player_name), "%s", current.c_str());
+    player_name_loaded = true;
+  }
+  ImGui::InputTextWithHint("Player name", "Player + address", player_name, sizeof(player_name));
+  if (ImGui::IsItemDeactivatedAfterEdit()) {
+    // Written to the config file between quotes.
+    std::string name = player_name;
+    name.erase(std::remove(name.begin(), name.end(), '"'), name.end());
+    std::snprintf(player_name, sizeof(player_name), "%s", name.c_str());
+    rex::cvar::SetFlagByName("player_name", name);
+    Save();
+  }
+  ImGui::EndDisabled();
+  ImGui::TextDisabled("Multiplayer > System Link on each PC: the first player");
+  ImGui::TextDisabled("waits, the next one joins. Same game version everywhere.");
+  if (g_system_link_at_startup >= 0 &&
+      ((system_link ? 1 : 0) != g_system_link_at_startup ||
+       (system_link && rex::cvar::GetFlagByName("player_name") != g_player_name_at_startup))) {
+    RestartNotice();
+  }
 
   ImGui::Separator();
   ImGui::TextDisabled("Settings are saved automatically.");

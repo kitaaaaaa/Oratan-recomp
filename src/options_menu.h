@@ -29,6 +29,8 @@ class OptionsDialog : public rex::ui::ImGuiDialog {
  private:
   void Save();
   void DrawNetplay();
+  // "Restart the game to apply", with a button that does.
+  void RestartNotice();
 
   std::filesystem::path config_path_;
   std::function<void(const RelaunchArgs&)> restart_;
