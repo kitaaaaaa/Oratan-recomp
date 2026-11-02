@@ -54,6 +54,9 @@
 // sub_821DD118 (SetMotionFlags); sub_821E8B98 (TargetGeometry), the driver's step
 // before the state.
 //
+// sub_821EAC78: state 0's second handler (counts +312, or state 21 from +174); see
+// State0Second.
+//
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
 //     toward the other robot (after 18 ticks of +338; before that it copies
@@ -124,6 +127,7 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821EAC78);
 REX_EXTERN(__imp__sub_821DD118);
 REX_EXTERN(__imp__sub_821E8B98);
 REX_EXTERN(__imp__sub_822B6820);
@@ -3862,6 +3866,76 @@ void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
       report_every);
 }
 
+
+// sub_821EAC78, state 0's second handler (run before the driver, by
+// sub_821EC830): counts +312 down; otherwise, unless +278 is 1 in substates
+// 11-16, +174 is 255 or +4494 bit 2 is set, goes to state 21 (+174 0: +278 2
+// and +64 the data's +3644; else +278 4, +584 / +588 1 and -+3644), with the
+// class's move angle (kMoveTable3 by +164) through sub_821C01D8.
+void State0Second(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  k.k.r1.u64 = ctx.r1.u32 - 112;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  if (c.S16(312) != 0) {
+    c.SetH(312, c.S16(312) - 1);
+    return;
+  }
+  if (c.H(278) == 1 && c.H(274) >= 11 && c.H(274) <= 16) return;
+  const uint32_t b174 = c.B(174);
+  if (b174 == 255 || (c.B(4494) & 2) != 0) return;
+  c.SetH(288, 0);
+  c.SetH(272, 21);
+  c.SetH(290, 0);
+  c.SetH(274, 0);
+  c.SetB(577, 0);
+  c.SetH(12, 0);
+  c.SetH(598, 0);
+  const uint32_t data = Control{base, game_address}.W(game::kGameRobotData);
+  const uint32_t speed = Control{base, data}.W(3644);
+  if (b174 == 0) {
+    c.SetW(584, 0);
+    c.SetW(588, 0);
+    c.SetH(278, 2);
+    c.SetW(64, speed);
+  } else {
+    c.SetW(584, 1);
+    c.SetW(588, 1);
+    c.SetH(278, 4);
+    c.SetW(64, speed ^ 0x80000000u);
+  }
+  const uint32_t r = k.Call(__imp__sub_821DD230, c.a, 0);
+  k.k.r4.u64 = Table(base, kMoveTable3, c.B(164));
+  k.Call(__imp__sub_821C01D8, r);
+  c.SetH(102, 0);
+  k.Call(__imp__sub_821E0160, c.a, 2);
+}
+
+void VerifyState0Second(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821EAC78", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821EAC78(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        State0Second(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} b174 {} s312 {}", control == game_address + kControl2 ? 2 : 1, c.B(174),
+                           c.S16(312));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -4103,4 +4177,13 @@ REX_HOOK_RAW(sub_821E8B98) {
     oratan::decomp::VerifySmall("sub_821E8B98", __imp__sub_821E8B98, oratan::decomp::TargetGeometry, ctx, base, false, 6000);
   }
   oratan::decomp::TargetGeometry(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821EAC78) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821EAC78(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyState0Second(ctx, base);
+  oratan::decomp::State0Second(ctx, base);
 }

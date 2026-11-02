@@ -780,6 +780,14 @@ or 23), or to the free state from state 1 substates 0 / 1 while +264 is set. 42,
 0 mismatches, first try (two bytes of the CPU side differ between runs of the original itself
 and are not counted); end to end 0 drifting ticks; a planted bug gave 205.
 
+**`sub_821EAC78`, state 0's second handler** (2026-11-02, `robot_states.cpp`, `State0Second`).
+Run by `sub_821EC830` before the driver while in state 0: counts +312 down, or, with +174 set
+(and not +278 1 in substates 11-16, not +4494 bit 2), goes to state 21 (+174 0 or not picks the
+direction), through `sub_821DD230`, `sub_821C01D8` with the class's move angle and
+`sub_821E0160`. 69,600 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug
+in the count gave 336. The state 21 branch doesn't run in the reference replay (as with
+`sub_821C01D8`), so only the count and the exits are checked.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
