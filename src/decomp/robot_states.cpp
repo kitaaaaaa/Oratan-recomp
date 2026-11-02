@@ -51,6 +51,8 @@
 // sub_821DF990: small helpers (MotionFlags, TurnTarget, SpeedByAngle,
 // AddTo112, AddTo112BySubstate, AttackFlag4494); sub_821DF6E0 (LandingDash) and
 // sub_821DF440 (Command), sub_821DFFA8 (AirAttack), sub_821DEE00 (NextAirAttack).
+// sub_821DD118 (SetMotionFlags); sub_821E8B98 (TargetGeometry), the driver's step
+// before the state.
 //
 // sub_821F8168, a robot's per-tick driver, in order:
 //   - sets Game +38508 to the robot's data and moves the +4476 point halfway
@@ -122,6 +124,20 @@ REX_EXTERN(__imp__sub_821DF200);
 REX_EXTERN(__imp__sub_821DF440);
 REX_EXTERN(__imp__sub_821E01E0);
 REX_EXTERN(__imp__sub_821F8168);
+REX_EXTERN(__imp__sub_821DD118);
+REX_EXTERN(__imp__sub_821E8B98);
+REX_EXTERN(__imp__sub_822B6820);
+REX_EXTERN(__imp__sub_822B5A18);
+REX_EXTERN(__imp__sub_822B5908);
+REX_EXTERN(__imp__sub_822A7508);
+REX_EXTERN(__imp__sub_822A74E8);
+REX_EXTERN(__imp__sub_822A74F8);
+REX_EXTERN(__imp__sub_822B5B90);
+REX_EXTERN(__imp__sub_822B61B0);
+REX_EXTERN(__imp__sub_822B5A78);
+REX_EXTERN(__imp__sub_822A73D8);
+REX_EXTERN(__imp__sub_822A75D8);
+REX_EXTERN(__imp__sub_822A7610);
 REX_EXTERN(__imp__sub_821DFBA0);
 REX_EXTERN(__imp__sub_821E4BC0);
 REX_EXTERN(__imp__sub_821DFDD8);
@@ -3738,6 +3754,85 @@ void NextAirAttack(PPCContext& ctx, uint8_t* base) {
   ctx.r3.u64 = RefuseByKind(c, base, r);
 }
 
+// sub_821DD118(control, bits): sets bits in the side's motion flags.
+void SetMotionFlags(PPCContext& ctx, uint8_t* base) {
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kObjectTable);
+  const uint32_t side = ctx.r3.u32 != game_address + 25020 ? 1 : 0;
+  auto* flags = game::GuestPtr<be<uint32_t>>(base, kMotionFlags + side * 4);
+  *flags = uint32_t(*flags) | ctx.r4.u32;
+  ctx.r3.u64 = game_address;
+}
+
+// sub_821E8B98(control, other): the other robot as seen from this one, each
+// tick before the state: +4468 keeps last tick's distance, +4464 the
+// distance, +4490 the angle to it, +4488 the angle up to it, +4472 the
+// height difference. Normally on the ground plane (sub_822A7610 for the
+// distance, sub_822A73D8 for the angles); while Game +24932 is set the
+// distance is 3D (sub_822B6820) and the angles come from the other robot's
+// point +36 turned into this robot's frame (its angles and point +36).
+void TargetGeometry(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  const Control o{base, ctx.r4.u32};
+  Caller k{ctx, base};
+  const uint32_t frame = ctx.r1.u32 - 160;
+  k.k.r1.u64 = frame;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const auto f = [&](const Control& x, uint32_t off) { return std::bit_cast<float>(x.W(off)); };
+  const auto mem = [&](uint32_t address) {
+    return std::bit_cast<float>(uint32_t(*game::GuestPtr<be<uint32_t>>(base, address)));
+  };
+  const auto set_mem = [&](uint32_t address, float v) {
+    *game::GuestPtr<be<uint32_t>>(base, address) = std::bit_cast<uint32_t>(v);
+  };
+  const auto angle = [&](float x, float y) {
+    k.k.f1.f64 = double(x);
+    k.k.f2.f64 = double(y);
+    return k.Call(__imp__sub_822A73D8);
+  };
+  c.SetW(4468, c.W(4464));
+  if (Control{base, game_address}.W(kGameBusy) != 0) {
+    for (uint32_t i = 0; i < 3; ++i) {
+      set_mem(frame + 96 + i * 4, f(c, 24 + i * 4));
+      set_mem(frame + 112 + i * 4, f(o, 24 + i * 4));
+    }
+    k.k.r4.u64 = frame + 112;
+    k.Call(__imp__sub_822B6820, frame + 96);
+    SetFloat(c, 4464, k.k.f1.f64);
+    k.Call(__imp__sub_822B5A18);
+    k.Call(__imp__sub_822B5908);
+    k.k.r3.s64 = -int64_t(c.S16(10));
+    k.Call(__imp__sub_822A7508);
+    k.k.r3.s64 = -int64_t(c.S16(6));
+    k.Call(__imp__sub_822A74E8);
+    k.k.r3.s64 = -int64_t(c.S16(8));
+    k.Call(__imp__sub_822A74F8);
+    k.k.f3.f64 = -double(f(c, 44));
+    k.k.f2.f64 = -double(f(c, 40));
+    k.k.f1.f64 = -double(f(c, 36));
+    k.Call(__imp__sub_822B5B90);
+    k.k.r4.u64 = o.a + 36;
+    k.Call(__imp__sub_822B61B0, frame + 80);
+    k.Call(__imp__sub_822B5A78);
+    c.SetH(4490, angle(-mem(frame + 80), mem(frame + 88)));
+    k.k.f2.f64 = double(mem(frame + 88));
+    k.k.f1.f64 = double(mem(frame + 80));
+    k.Call(__imp__sub_822A75D8);
+    c.SetH(4488, angle(mem(frame + 84), float(k.k.f1.f64)));
+    SetFloat(c, 4472, double(mem(frame + 84)));
+  } else {
+    k.k.f4.f64 = double(f(o, 32));
+    k.k.f3.f64 = double(f(o, 24));
+    k.k.f2.f64 = double(f(c, 32));
+    k.k.f1.f64 = double(f(c, 24));
+    k.Call(__imp__sub_822A7610);
+    SetFloat(c, 4464, k.k.f1.f64);
+    c.SetH(4490, angle(f(c, 24) - f(o, 24), f(o, 32) - f(c, 32)));
+    c.SetH(4488, angle(f(o, 28) - f(c, 28), f(c, 4464)));
+    SetFloat(c, 4472, double(f(c, 28) - f(o, 28)));
+  }
+  ctx.r3.u64 = k.k.r3.u64;
+}
+
 // One live check per helper; `result` reads what the helper returns.
 void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
                  void (*rewrite_fn)(PPCContext&, uint8_t*), PPCContext& ctx, uint8_t* base, bool float_result,
@@ -3746,7 +3841,9 @@ void VerifySmall(const char* name, void (*original_fn)(PPCContext&, uint8_t*),
   const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
   if (!game_address) return;
   Verifier*& verifier = verifiers[name];
-  if (!verifier) verifier = new Verifier(name, base, {{game_address, 0xD000, "game"}});
+  if (!verifier) {
+    verifier = new Verifier(name, base, {{game_address, 0xD000, "game"}, {kMotionFlags, 8, "motion flags"}});
+  }
   const auto result = [&](const PPCContext& k) {
     return float_result ? std::bit_cast<int64_t>(k.f1.f64) : int64_t(k.r3.u32);
   };
@@ -3984,4 +4081,26 @@ REX_HOOK_RAW(sub_821DEE00) {
     oratan::decomp::VerifySmall("sub_821DEE00", __imp__sub_821DEE00, oratan::decomp::NextAirAttack, ctx, base, false, 100);
   }
   oratan::decomp::NextAirAttack(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821DD118) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821DD118(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821DD118", __imp__sub_821DD118, oratan::decomp::SetMotionFlags, ctx, base, false, 100);
+  }
+  oratan::decomp::SetMotionFlags(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E8B98) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E8B98(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) {
+    oratan::decomp::VerifySmall("sub_821E8B98", __imp__sub_821E8B98, oratan::decomp::TargetGeometry, ctx, base, false, 6000);
+  }
+  oratan::decomp::TargetGeometry(ctx, base);
 }

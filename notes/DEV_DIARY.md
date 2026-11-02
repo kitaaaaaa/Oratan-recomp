@@ -762,6 +762,14 @@ button held under 253 ticks blocks the plain variant) it picks substates 10-8, 4
 robot isn't in that substate and `sub_82257F50` agrees; the result passes `RefuseByKind`. 3,500
 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug gave 12.
 
+**`sub_821E8B98` and `sub_821DD118`** (2026-11-02, `robot_states.cpp`, `TargetGeometry` and
+`SetMotionFlags`). `sub_821E8B98` runs each tick before the state: the other robot's distance
+(+4464, last tick's at +4468), the angles to it (+4490, +4488) and the height difference (+4472),
+on the ground plane, or in 3D from this robot's frame while Game +24932 is set. `sub_821DD118` sets
+bits in the side's motion flags (0x83869E18), which the helper checks now declare. 120,000 /
+12,300 calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 114,000 / 50
+(the 50 came from the data section samples, before the flags were declared).
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
