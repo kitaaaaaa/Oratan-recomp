@@ -770,6 +770,16 @@ bits in the side's motion flags (0x83869E18), which the helper checks now declar
 12,300 calls, 0 mismatches, first try; end to end 0 drifting ticks; planted bugs gave 114,000 / 50
 (the 50 came from the data section samples, before the flags were declared).
 
+**`sub_821EC830`, a robot's tick before the driver** (2026-11-02, `robot_input.cpp`, `RobotTick`;
+with `sub_821F9AF0`, `ClearInput`). The robot's tick (`sub_821FBDF8`) is this, then the driver.
+It clears the "next" fields (+284..+300), runs the input step (`sub_821FB390` while Game +24914 is
+above 0; clears the input at 0), counts +394 / +396 down, eases +596 toward +594 (at most 1536 a
+tick), runs the movement state's second handler (state table +4), eases robot 2's +6 / +10 back
+to 0, and hands two states over: to state 10 when the other robot is in state 9 (from state 0
+or 23), or to the free state from state 1 substates 0 / 1 while +264 is set. 42,000 calls,
+0 mismatches, first try (two bytes of the CPU side differ between runs of the original itself
+and are not counted); end to end 0 drifting ticks; a planted bug gave 205.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

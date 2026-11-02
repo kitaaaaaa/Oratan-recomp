@@ -26,6 +26,9 @@
 //   angle from the y and x sums (sub_822A73D8, original), as a quadrant when
 //   spread is large.
 //
+// sub_821EC830 (RobotTick) runs before the driver: the input step, timers, the
+// state's second handler and two state hand-offs; sub_821F9AF0 (ClearInput).
+//
 // The CPU player's own steps (eight functions under sub_82212A98) and the
 // angle function are called as the original code, with the same arguments
 // and stack frames the original passes.
@@ -47,6 +50,8 @@
 #pragma clang fp contract(off)
 
 REX_EXTERN(__imp__sub_821FB390);
+REX_EXTERN(__imp__sub_821EC830);
+REX_EXTERN(sub_821FB390);
 REX_EXTERN(__imp__sub_821F9BC8);
 REX_EXTERN(__imp__sub_822A73D8);
 REX_EXTERN(__imp__sub_822118F0);
@@ -953,6 +958,158 @@ void VerifyCall(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// --- sub_821EC830: the robot's tick before the driver ------------------------
+
+// sub_821F9AF0: clears the robot's input (RobotControl +160, RobotInput) when
+// Game +24914 is 0.
+void ClearInput(uint8_t* base, uint32_t control) {
+  const auto b = [&](uint32_t o, uint8_t v) { *game::GuestPtr<uint8_t>(base, control + o) = v; };
+  const auto h = [&](uint32_t o, uint16_t v) { *game::GuestPtr<be<uint16_t>>(base, control + o) = v; };
+  const auto w = [&](uint32_t o, uint32_t v) { *game::GuestPtr<be<uint32_t>>(base, control + o) = v; };
+  const uint32_t zero = *game::GuestPtr<be<uint32_t>>(base, 0x8200095C);
+  w(264, 0);
+  h(188, 0xFFFF);
+  w(244, zero);
+  h(190, 0xFFFF);
+  w(236, zero);
+  w(252, 0xFFFFFFFF);
+  w(248, 0xFFFFFFFF);
+  for (uint32_t o : {163u, 162u, 164u}) b(o, 255);
+  for (uint32_t o : {260u, 256u, 268u}) w(o, 0);
+  for (uint32_t o : {169u, 168u, 167u, 171u, 170u, 173u, 172u, 166u, 165u, 177u, 176u, 179u, 178u}) b(o, 0);
+  w(232, 0);
+  w(228, 0);
+  b(180, 0);
+  b(181, 0);
+  b(174, 255);
+  h(184, 0);
+  h(182, 0);
+  for (uint32_t i = 0; i < 8; ++i) {
+    h(160 + (i + 26) * 2, 0);
+    h(160 + (i + 18) * 2, 0);
+  }
+}
+
+// sub_821EC830: clears the "next" fields (+284..+300), runs the input step
+// (sub_821FB390 while Game +24914 is above 0, ClearInput at 0), counts +394 /
+// +396 down, eases +596 toward +594 by at most 1536, runs the movement
+// state's second handler (state table +4), keeps robot 2's +6 / +10 easing
+// back to 0, and hands two states over: to state 10 when the other robot is
+// in state 9 with +577 clear (from state 0 or 23, +316 clear), or back to the
+// free state from state 1 substates 0 / 1 while +264 is set.
+void RobotTick(PPCContext& ctx, uint8_t* base) {
+  const uint32_t control = ctx.r3.u32;
+  PPCContext k = ctx;
+  k.r1.u64 = ctx.r1.u32 - 112;
+  const uint32_t game_address = GameAddress(base);
+  const auto B = [&](uint32_t o) { return uint32_t(*game::GuestPtr<uint8_t>(base, control + o)); };
+  const auto H = [&](uint32_t o) { return uint32_t(uint16_t(*game::GuestPtr<be<uint16_t>>(base, control + o))); };
+  const auto S16 = [&](uint32_t o) { return int32_t(int16_t(H(o))); };
+  const auto W = [&](uint32_t o) { return uint32_t(*game::GuestPtr<be<uint32_t>>(base, control + o)); };
+  const auto SetB = [&](uint32_t o, uint32_t v) { *game::GuestPtr<uint8_t>(base, control + o) = uint8_t(v); };
+  const auto SetH = [&](uint32_t o, uint32_t v) { *game::GuestPtr<be<uint16_t>>(base, control + o) = uint16_t(v); };
+  const auto SetW = [&](uint32_t o, uint32_t v) { *game::GuestPtr<be<uint32_t>>(base, control + o) = v; };
+
+  *game::GuestPtr<be<uint32_t>>(base, game_address + 38508) = W(76);
+  SetH(296, 0xFFFF);
+  SetW(300, 0xFFFFFFFF);
+  SetH(294, 0xFFFF);
+  SetH(292, 0xFFFF);
+  for (uint32_t o : {286u, 285u, 284u}) SetB(o, 0xFF);
+  const int8_t input_mode = int8_t(*game::GuestPtr<uint8_t>(base, game_address + 24914));
+  if (input_mode > 0) {
+    k.r3.u64 = control;
+    sub_821FB390(k, base);
+  } else if (input_mode == 0) {
+    ClearInput(base, control);
+  }
+  if (H(394) != 0) SetH(394, H(394) - 1);
+  if (H(396) != 0) SetH(396, H(396) - 1);
+  int32_t step = int16_t(uint16_t(H(594) - uint32_t(S16(596))));
+  if (step > 1536) step = 1536;
+  if (step < -1536) step = -1536;
+  SetH(596, uint32_t(step + S16(596)));
+  const uint32_t state = H(272);
+  if (state < 32) {
+    const uint32_t handler = *game::GuestPtr<be<uint32_t>>(base, 0x82027C80 + state * 12 + 4);
+    if (handler != 0) {
+      k.ctr.u64 = handler;
+      k.r3.u64 = control;
+      rex::runtime::ResolveIndirectFunction(handler)(k, base);
+    }
+  }
+  const bool busy = *game::GuestPtr<be<int32_t>>(base, game_address + kGameBusy) != 0;
+  const uint32_t now = H(272);
+  if (!busy && B(2) == 2 && now != 24 && now != 25 && now != 26 && (S16(6) != 0 || H(10) != 0)) {
+    // Robot 2 eases its +6 / +10 back to 0, at most 2048 a tick.
+    const int32_t a6 = S16(6), a10 = S16(10);
+    int32_t d6 = int16_t(-a6), d10 = int16_t(-a10);
+    d6 = d6 > 2048 ? 2048 : d6 < -2048 ? -2048 : d6;
+    d10 = d10 > 2048 ? 2048 : d10 < -2048 ? -2048 : d10;
+    SetH(6, uint32_t(d6 + a6));
+    SetH(10, uint32_t(d10 + a10));
+  }
+  const uint32_t other = W(72);
+  const auto other_h = [&](uint32_t o) { return uint32_t(uint16_t(*game::GuestPtr<be<uint16_t>>(base, other + o))); };
+  const uint32_t state_now = H(272);
+  if (other_h(272) == 9 && *game::GuestPtr<uint8_t>(base, other + 577) == 0 && (state_now == 0 || state_now == 23) &&
+      H(316) == 0) {
+    // The other robot's state 9 pulls this one into state 10.
+    const uint32_t other_584 = *game::GuestPtr<be<uint32_t>>(base, other + 584);
+    SetH(288, 0);
+    SetH(274, 0);
+    SetH(272, 10);
+    SetW(584, other_584);
+    SetH(102, 0);
+    SetB(577, 0);
+    SetH(276, 0);
+    const uint32_t bit = other_584 != 0 ? 0x2000 : 0x1000;
+    const uint32_t params = W(76);
+    const uint32_t flags4 = (uint32_t(uint16_t(*game::GuestPtr<be<uint16_t>>(base, params + 116))) & bit) != 0
+                                ? (H(4) | 2)
+                                : (H(4) & ~2u);
+    SetH(4, flags4);
+    SetB(0, 0);
+    SetW(300, 0);
+    SetH(448, uint32_t(-15));
+    SetH(4, H(4) & ~4u);
+  } else if (W(264) != 0 && state_now == 1 && (H(274) == 0 || H(274) == 1)) {
+    for (uint32_t o : {272u, 288u, 290u, 274u}) SetH(o, 0);
+    SetB(576, 0);
+    SetB(577, 0);
+    for (uint32_t o : {292u, 102u, 294u, 104u}) SetH(o, 0);
+    SetW(584, 0);
+    for (uint32_t o : {594u, 598u, 12u, 4492u}) SetH(o, 0);
+    SetW(112, 0);
+  }
+  ctx.r3.u64 = k.r3.u64;
+}
+
+void VerifyRobotTick(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = GameAddress(base);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821EC830", base, {{game_address, 0xD000, "game"}});
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821EC830(original, base);
+        return int64_t(0);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        RobotTick(rewrite, base);
+        return int64_t(0);
+      },
+      [&] {
+        const uint32_t c = ctx.r3.u32;
+        return fmt::format("side {} state {}", c == game_address + kControl2 ? 2 : 1,
+                           uint16_t(*game::GuestPtr<be<uint16_t>>(base, c + 272)));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -969,4 +1126,13 @@ REX_HOOK_RAW(sub_821FB390) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyCall(ctx, base);
   oratan::decomp::RobotInputTick(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821EC830) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821EC830(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyRobotTick(ctx, base);
+  oratan::decomp::RobotTick(ctx, base);
 }
