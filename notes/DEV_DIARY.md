@@ -638,6 +638,23 @@ parameter records. A result whose kind (table 0x82027F10) is 2, 5 or 8 is refuse
 +458 or +462 runs. 80,400 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted
 bug gave 531.
 
+**`sub_821E1930`, picking a substate** (2026-11-01, `robot_states.cpp`). Called from the free state
+and states 12 / 19: stores `sub_821DD968`'s choice at +274; some robots' choices start a special
+instead (Ajim 24 from a button held 253 ticks, robot 7 and Specineff 25, robot 9 25 against
+substates 17 / 18, Dordray 27 and 9, Specineff 26). 1,200 calls, 0 mismatches; end to end 0
+drifting ticks. In the Fei-Yen replay `sub_821DD968` always returns 0 here, so only the opening and
+that exit run (a plant there was caught, one past it was not): the rest needs a recording.
+
+**`sub_821E9900`, the damage step** (2026-11-01, `robot_damage.cpp`, with its seven helpers). Takes
+the tick's hits from the control block (+4446 damage, +4442 added to +116, +4432 extra, +4440 off
+the +464..+470 counters, +4448 flags), lets +314 / +316 cancel and +320 absorb them, scales the
+damage by Game +24924 / +680, the robot's data and a cap (Game +24928), picks the reaction state from
+the flags and +116 + +112 against three limits, and takes the damage off health (+80); at 0, most
+states go to state 30. 120,600 calls, 0 mismatches, first try; end to end 0 drifting ticks; a
+planted bug (110% -> 111%) gave 147. A coverage probe (removed) shows the common hit paths run in
+the Fei-Yen replay; the robot-specific branches (robots 0, 4, 8, 9, 10, 11, 12, 15, 17, 18) and some
+flags (0x10 .. 0x100, 0x10000, 0x1000000, healing) do not.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot

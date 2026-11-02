@@ -2126,6 +2126,147 @@ void VerifyDriver(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+// sub_821E1930: in the free state (and states 12 / 19's substate 0), picks
+// the next substate with sub_821DD968 and stores it at +274; some robots'
+// substates start a special instead: Ajim (15) state 24 (from a button held
+// 253 ticks), robot 7 / Specineff (10) state 25, robot 9 state 25 while the
+// other robot is in substate 17 / 18, Dordray (0) states 27 and 9, robot 10
+// state 26. When the other robot's +4495 is set, some substate / robot pairs
+// call sub_821DD810 instead. Returns 1 when a plain substate was taken.
+uint32_t PickSubstate(const Control& c, Caller& k, uint8_t* base) {
+  k.k.r1.u64 = k.k.r1.u32 - 128;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  c.SetB(440, 0);
+  c.SetH(438, 0);
+  c.SetB(441, 0);
+  if (c.H(312) != 0) return 0;
+
+  const int32_t w264 = int32_t(c.W(264));
+  const bool w264_small = w264 != 0 && w264 > -9 && w264 < 9;
+  const bool w264_negative = w264 < 0 && w264 > -9;
+  const uint32_t robot = c.B(2);
+  // Start state `state` with +274 = `sub`; the shared resets of every special.
+  const auto special = [&](uint32_t state, uint32_t sub) {
+    c.SetH(274, sub);
+    c.SetH(276, 0);
+    c.SetH(272, state);
+    c.SetB(286, 0);
+    c.SetH(292, 0);
+    return 0u;
+  };
+
+  if (robot == 15 && w264_negative && c.H(278) == 0) {
+    // Ajim: the first of +169 / +167 / +168 held 253 ticks picks a substate.
+    uint32_t held = 0;
+    if (c.B(169) >= 253) {
+      held = 15;
+    } else if (c.B(167) >= 253) {
+      held = 11;
+    } else if (c.B(168) >= 253) {
+      held = 13;
+    }
+    const int32_t kind = int32_t(*game::GuestPtr<be<uint32_t>>(base, kSubstateKinds + held * 4));
+    const bool refused = (kind == 2 && c.H(460) != 0) || (kind == 5 && c.H(458) != 0) ||
+                         (kind == 8 && c.H(462) != 0);
+    if (!refused && held == 15 && c.W(404) == 0 && c.W(408) == 0) {
+      c.SetH(320, 500);
+      return special(24, 0);
+    }
+  }
+
+  k.k.r6.u64 = 0;
+  k.k.r5.s64 = -1;
+  const uint32_t next = k.Call(__imp__sub_821DD968, c.a, 1) & 0xFFFF;
+  c.SetH(274, next);
+  if (next == 0) return 0;
+  const bool busy = int32_t(Control{base, game_address}.W(kGameBusy)) != 0;
+
+  if (!busy && robot == 7 && w264_small && c.H(278) == 0 && (next == 8 || next == 15) && c.W(412) == 0) {
+    c.SetH(320, 800);
+    return special(25, w264 < 0 ? 1 : 0);
+  }
+  if (!busy && robot == 9 && c.S16(450) > 0 && next == 12 && In(Control{base, c.W(72)}.H(274), {17, 18})) {
+    c.SetH(338, c.B(148) != 0 ? 1 : 0);
+    return special(25, 0);
+  }
+  if (robot == 0 && c.S16(450) > 0) {
+    c.SetH(272, 0);
+    c.SetH(288, 0);
+    for (uint32_t o : {438u, 296u, 104u, 292u}) c.SetH(o, 0);
+    c.SetB(286, 0);
+    return 0;
+  }
+  if (robot == 0) {
+    if (!busy && w264_negative && c.H(278) == 0 && (next == 8 || next == 15) && c.W(412) == 0) {
+      return special(27, 0);
+    }
+    if (next == 16) {
+      c.SetW(584, 0);
+      c.SetH(4492, 0);
+      return special(9, 0);
+    }
+  }
+  if (robot == 10 && w264_small && c.H(278) == 0) {
+    k.k.r6.u64 = 6;
+    k.k.r5.u64 = 0;
+    if (k.Call(__imp__sub_82257F50, c.a, 0) != 0 && In(c.H(274), {5, 13})) {
+      return special(25, int32_t(c.W(264)) < 0 ? 1 : 0);
+    }
+  }
+  if (c.B(2) == 10 && w264_negative && c.H(278) == 0 && c.H(274) == 15) return special(26, 0);
+
+  if (Control{base, c.W(72)}.B(4495) != 0) {
+    const uint32_t sub = c.H(274);
+    const bool listed = In(c.B(2), {8, 0, 1, 16, 11});
+    if ((In(sub, {13, 14}) && listed) || (In(sub, {11, 12}) && !listed)) {
+      k.Call(__imp__sub_821DD810, c.a);
+      return 0;
+    }
+  }
+
+  const uint32_t sub = c.H(274);
+  c.SetH(272, 0);
+  c.SetH(288, 0);
+  if (In(sub, {2, 5, 8, 4, 7, 10, 3, 6, 9, 11, 13, 15}) && c.B(170) >= 240) {
+    c.SetW(300, 1);
+    c.SetB(284, 4);
+  }
+  for (uint32_t o : {4492u, 438u, 296u, 104u, 292u}) c.SetH(o, 0);
+  c.SetB(286, 0);
+  return 1;
+}
+
+void PickSubstateHook(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  ctx.r3.u64 = PickSubstate(c, k, base);
+}
+
+void VerifyPickSubstate(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_821E1930", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_821E1930(original, base);
+        return int64_t(original.r3.u32);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        PickSubstateHook(rewrite, base);
+        return int64_t(rewrite.r3.u32);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} state {} sub {} robot {}", control == game_address + kControl2 ? 2 : 1,
+                           c.H(272), c.H(274), c.B(2));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -2181,4 +2322,13 @@ REX_HOOK_RAW(sub_821DD968) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyChooseSubstate(ctx, base);
   oratan::decomp::ChooseSubstateHook(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821E1930) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_821E1930(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyPickSubstate(ctx, base);
+  oratan::decomp::PickSubstateHook(ctx, base);
 }
