@@ -21,6 +21,8 @@
 //     within 0..+3640, and sets flag 256 below +3642.
 // The callees (two angle functions, the angle between two points, the angle
 // wrap and the distance) run as the original code.
+//
+// sub_82257F50, whether a weapon can fire now: see WeaponReady.
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -47,6 +49,9 @@ REX_EXTERN(__imp__sub_822A75A0);
 REX_EXTERN(__imp__sub_822A73D8);
 REX_EXTERN(__imp__sub_82227FC8);
 REX_EXTERN(__imp__sub_822B6820);
+REX_EXTERN(__imp__sub_82257F50);
+REX_EXTERN(__imp__sub_82257ED0);
+REX_EXTERN(__imp__sub_821FCCE8);
 
 namespace oratan::decomp {
 namespace {
@@ -56,7 +61,12 @@ using game::be;
 
 constexpr uint32_t kGameBusy = 24932;
 constexpr uint32_t kGameHoldGauges = 0xCF00;  // u8: counters held at their maximum
-constexpr uint32_t kControl2 = 29516;
+constexpr uint32_t kControl1 = 25020, kControl2 = 29516;
+// Move ids by weapon (+0 weapon 2, +96 weapon 1, +192 weapon 0), robot, r6 and variant (u16).
+constexpr uint32_t kMoveIds = 0x82066C98;
+// Per button state (+576), three u16: a kind (3: variant from the table at kMoveIds - 1128),
+// then 1 when sub_82257F50 uses r6 = 1.
+constexpr uint32_t kButtonKinds = kMoveIds - 1104;
 constexpr uint32_t kZeroFloat = 0x8200095C;
 // Limits for +4472 (floats) and the scale of the point ahead (double).
 constexpr uint32_t k4472Max = 0x8200218C, k4472Min = 0x82027FF0, k4472MinRobot4 = 0x82018F90;
@@ -285,6 +295,122 @@ void VerifyCall(PPCContext& ctx, uint8_t* base) {
       600);
 }
 
+
+// sub_82257F50(control, weapon, variant, r6): whether the weapon (0, 1, 2)
+// can fire now. The move comes from the table at kMoveIds by robot, r6
+// (0 / 1; with r6 == 0, 1 when the button state's entry says so),
+// variant (replaced by the table at kMoveIds - 1128 for button states of
+// kind 3 while +577 < 2), and weapon; r6 == 6 picks robots 2 / 10's own
+// moves. sub_82257ED0 gives the move's data, whose +148 * +150 is its cost:
+// the weapon's gauge counter (+404 / +408 / +412) must be at most the
+// maximum (+3510 / +3508 / +3512) minus the cost. Some robots' moves are
+// refused by +2192 bits. When refused, Game + (9640 / 9644 / 9642 + side) * 4
+// is set to 32. Returns 1 when allowed (or sub_821FCCE8's result for Ajim).
+uint32_t WeaponReady(const Control& c, Caller& k, uint8_t* base, uint32_t weapon, int32_t variant, int32_t r6) {
+  k.k.r1.u64 = k.k.r1.u32 - 144;
+  const uint32_t game_address = k.Call(__imp__sub_822AC098, 0);
+  const Control g{base, game_address};
+  const auto table_h = [&](uint32_t address) { return *game::GuestPtr<be<uint16_t>>(base, address); };
+  const uint32_t button = c.B(576);
+  int32_t move = 0;
+  if (r6 == 6) {
+    if (c.B(2) == 2) {
+      move = weapon == 0 ? 2129 : weapon == 1 ? 2128 : weapon == 2 ? 2130 : 0;
+    } else if (c.B(2) == 10) {
+      move = weapon == 0 ? 3207 : weapon == 2 ? 3208 : 0;
+    }
+    r6 = 0;
+  } else if (r6 == 0 && table_h(kButtonKinds + 2 + button * 6) == 1) {
+    r6 = 1;
+  }
+  if (table_h(kButtonKinds + c.B(576) * 6) == 3 && c.B(577) < 2) {
+    variant = int32_t(*game::GuestPtr<be<uint32_t>>(base, kMoveIds - 1128 + c.W(588) * 4));
+  }
+  if (weapon >= 3) return 0;
+  // The move id from the table for this weapon.
+  const auto table_move = [&](uint32_t table) {
+    const uint32_t index = (uint32_t(18 * c.B(2) + r6) * 8 + uint32_t(variant)) * 2;
+    return int32_t(int16_t(table_h(table + index)));
+  };
+  const auto refuse = [&](uint32_t slot) {
+    const uint32_t side = c.a != game_address + kControl1 ? 1 : 0;
+    g.SetW((slot + side) * 4, 32);
+    return 0u;
+  };
+  // Gauge counter `counter` within the maximum at `max` minus the move's cost.
+  const auto affordable = [&](uint32_t move_data, uint32_t counter, uint32_t max) {
+    const Control m{base, move_data};
+    const int32_t cost = m.S16(150) * m.S16(148);
+    return c.S32(counter) <= int32_t(Control{base, c.W(76)}.H(max)) - cost;
+  };
+
+  if (weapon == 0) {
+    if (move == 0) move = table_move(kMoveIds + 192);
+    k.k.r4.s64 = move;
+    const uint32_t data = k.Call(__imp__sub_82257ED0, c.a);
+    const uint32_t robot = c.B(2);
+    if (robot == 0 && (c.W(2192) & 1) != 0) return refuse(9640);
+    if (robot == 10 && variant == 2 && (c.W(2192) & 1) != 0) return refuse(9640);
+    return affordable(data, 404, 3510) ? 1 : refuse(9640);
+  }
+  if (weapon == 1) {
+    if (move == 0) move = table_move(kMoveIds + 96);
+    k.k.r4.s64 = move;
+    const uint32_t data = k.Call(__imp__sub_82257ED0, c.a);
+    const uint32_t robot = c.B(2);
+    if (robot == 0 && (c.W(2192) & 2) != 0 && variant == 2) return refuse(9644);
+    if (robot == 10 && variant == 2 && (c.W(2192) & 1) != 0) return refuse(9644);
+    return affordable(data, 408, 3508) ? 1 : refuse(9644);
+  }
+  if (move == 0) move = table_move(kMoveIds);
+  if (c.S16(438) > 1 && move >= 633 && move <= 680) move += 64;
+  k.k.r4.s64 = move;
+  const uint32_t data = k.Call(__imp__sub_82257ED0, c.a);
+  const uint32_t robot = c.B(2);
+  if (robot == 10 && (variant == 2 || move == 3208) && (c.W(2192) & 1) != 0) return refuse(9642);
+  if (robot == 12 && (c.W(2192) & 2) != 0 && !(r6 == 1 && c.W(588) == 0 && c.W(412) == 0)) {
+    if ((c.H(304) & 2) == 0 || c.B(3322) != 0 || c.H(450) != 0) return refuse(9642);
+  }
+  if (robot == 15 && variant == 2) {
+    k.k.r4.u64 = 0;
+    const uint32_t r = k.Call(__imp__sub_821FCCE8, c.a);
+    return r != 0 ? r : refuse(9642);
+  }
+  return affordable(data, 412, 3512) ? 1 : refuse(9642);
+}
+
+void WeaponReadyHook(PPCContext& ctx, uint8_t* base) {
+  const Control c{base, ctx.r3.u32};
+  Caller k{ctx, base};
+  ctx.r3.u64 = WeaponReady(c, k, base, ctx.r4.u32, ctx.r5.s32, ctx.r6.s32);
+}
+
+void VerifyWeaponReady(PPCContext& ctx, uint8_t* base) {
+  static Verifier* verifier = nullptr;
+  const uint32_t game_address = game::LoadGuestAddress(base, game::kGamePointer);
+  if (!game_address) return;
+  if (!verifier) verifier = new Verifier("sub_82257F50", base, {{game_address, 0xD000, "game"}});
+  const uint32_t control = ctx.r3.u32;
+  verifier->CheckCall(
+      [&] {
+        PPCContext original = ctx;
+        __imp__sub_82257F50(original, base);
+        return int64_t(original.r3.u32);
+      },
+      [&] {
+        PPCContext rewrite = ctx;
+        WeaponReadyHook(rewrite, base);
+        return int64_t(rewrite.r3.u32);
+      },
+      [&] {
+        const Control c{base, control};
+        return fmt::format("side {} weapon {} variant {} r6 {} robot {} button {}",
+                           control == game_address + kControl2 ? 2 : 1, ctx.r4.u32, ctx.r5.s32, ctx.r6.s32,
+                           c.B(2), c.B(576));
+      },
+      600);
+}
+
 }  // namespace
 }  // namespace oratan::decomp
 
@@ -295,4 +421,13 @@ REX_HOOK_RAW(sub_821E0308) {
   }
   if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyCall(ctx, base);
   oratan::decomp::WeaponStatus(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82257F50) {
+  if (REXCVAR_GET(decomp_use_originals)) {
+    __imp__sub_82257F50(ctx, base);
+    return;
+  }
+  if (REXCVAR_GET(decomp_verify_calls)) oratan::decomp::VerifyWeaponReady(ctx, base);
+  oratan::decomp::WeaponReadyHook(ctx, base);
 }

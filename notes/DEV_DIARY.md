@@ -716,6 +716,15 @@ again at +0 if its hold limit allows and `sub_82257F50` agrees. The verifier kee
 record address (the record is on the stack). About 184,000 calls, 0 mismatches, first try; end to
 end 0 drifting ticks; a planted bug gave 45.
 
+**`sub_82257F50`, whether a weapon can fire** (2026-11-01, `robot_weapon_gauges_and_ranges.cpp`,
+`WeaponReady`). Picks the move id from the table at 0x82066C98 (by weapon, robot, r6 and variant;
+r6 == 6 gives robots 2 / 10 their own moves; button states of kind 3 take the variant from a table
+by +588), gets the move's data from `sub_82257ED0`, and allows the weapon when its gauge counter
+(+404 / +408 / +412) is at most the maximum minus the move's cost (+148 * +150). Some moves of
+robots 0, 10, 12 and 15 are refused by +2192 bits; a refusal sets Game + (9640 / 9644 / 9642 +
+side) * 4 to 32. 1,800 calls, 0 mismatches, first try; end to end 0 drifting ticks; a planted bug
+gave 777.
+
 ## 8. Replays
 
 `src/replay.cpp` (developer): `--replay_record=FILE` records every controller read from boot
