@@ -28,6 +28,7 @@ set(ORATAN_SOURCES
     src/robot_probe.cpp
     src/state_hash.cpp
     src/tick_hooks.cpp
+    src/system_link.cpp
     src/netplay.cpp
     src/decomp/decomp.cpp
     src/decomp/game_flow.cpp

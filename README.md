@@ -115,6 +115,33 @@ warns if the two games fall out of sync. **Leave netplay** restarts the game
 offline. If the other player disconnects, the game carries on offline after 10
 seconds.
 
+### System Link: versus on the local network (experimental)
+
+The game's own System Link mode, between PCs on the same network:
+
+1. On each PC, allow the game through the Windows firewall once:
+   double-click **allow-firewall.bat** (it asks for administrator rights and
+   only opens UDP 1000-1002 and 3076 to the local network).
+2. Press **F1**, tick **System Link on the local network**, type a player
+   name and click **Restart now**.
+3. On each PC: **Multiplayer > System Link**, pick a robot, **OK**. The first
+   player waits for an opponent; the next one joins them. Every PC needs the
+   same version of this port.
+
+If the PCs don't find each other (Wi-Fi that drops broadcasts, VPNs), name
+the other PCs in `Virtual-On OT.toml`, e.g. `lan_peers = "192.168.1.20"`. A
+PC whose VPN adapters hide its LAN address can be given it with
+`lan_address = "192.168.1.10"`. For testing, two copies run on one PC with
+`--lan_address=127.0.0.2` and `--lan_address=127.0.0.3` (and
+`--background_pads=false`, so the controller drives the focused window).
+
+**Xbox LIVE modes on the local network** (also experimental): tick it in F1
+(and restart), and **Multiplayer > Player Match** works between the PCs on
+the network: **Custom Match** opens a lobby, **Quick Match** on another PC
+finds it. There are no friends lists or invites, private matches can't be
+found, and the **Xbox LIVE Party Lobby** (the mode with observer slots) needs
+an Xbox Live party, which isn't emulated yet.
+
 ### Hidden stages and Bradtos (Training)
 
 The game has stages and a boss that its menus never offer. In Training:
@@ -144,7 +171,9 @@ crash or misbehave and are left out.
 | Local two-player versus with split screen | Working, experimental, see above |
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
 | Online versus (netplay, F1 → Netplay) | Experimental, tested on one PC; see above |
-| Original Xbox Live / System Link menus | Not supported (netplay replaces them) |
+| System Link (local network versus) | Working, experimental, see above |
+| Xbox Live Player Match (Quick / Custom Match) on the local network | Working, experimental, see above |
+| Xbox Live Party Lobby (observers), Xbox Live over the internet | Not yet supported |
 
 ## Building from source
 
