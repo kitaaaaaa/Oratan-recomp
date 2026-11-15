@@ -121,7 +121,9 @@ Match** works between PCs, on the local network or over the internet:
   **observers**, who watch the match live. Every PC with Xbox LIVE modes on is
   in one Xbox Live party: the host opens the lobby and presses **START**
   (Invite Xbox LIVE Party), and the other PCs, waiting in the main menu,
-  join it.
+  join it. After each match, when the host returns to the lobby, everyone
+  else is brought back automatically (players still on the results screen
+  come back as soon as they leave it, unless the next match has started).
 
 **Over the internet**, one player hosts: they leave **Host address** in F1
 empty and forward UDP ports 1000-1002 and 3076 to their PC (and allow

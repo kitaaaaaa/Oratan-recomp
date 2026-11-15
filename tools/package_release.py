@@ -63,7 +63,8 @@ next one joins.
 Xbox LIVE modes (experimental): tick "Xbox LIVE modes" in F1 and restart,
 then use Multiplayer > Player Match. Quick Match finds a Custom Match lobby.
 In the Xbox LIVE Party Lobby (with observers) every PC with Xbox LIVE modes
-on is in the party: the host presses START to invite them all. Over the
+on is in the party: the host presses START to invite them all, and after
+each match everyone is brought back when the host returns to the lobby. Over the
 internet, the others type the host's address in F1 > Host address, and the
 host forwards UDP 1000-1002 and 3076 to their PC.
 

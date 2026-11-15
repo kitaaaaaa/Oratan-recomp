@@ -1,0 +1,155 @@
+diff --git a/include/rex/system/lan_sessions.h b/include/rex/system/lan_sessions.h
+index d3e840b..a6447bc 100644
+--- a/include/rex/system/lan_sessions.h
++++ b/include/rex/system/lan_sessions.h
+@@ -34,6 +34,8 @@ void SetProperty(uint32_t user_index, uint32_t property_id, const uint8_t* data,
+ // object (guest address), `info` the 60-byte XSESSION_INFO just made for it.
+ void HostCreated(uint32_t session, const uint8_t* info, uint32_t flags, uint32_t public_slots,
+                  uint32_t private_slots);
++// XSessionCreate joining a Live session (`info` is the host's XSESSION_INFO).
++void Joined(uint32_t session, const uint8_t* info);
+ void HostModified(uint32_t session, uint32_t flags, uint32_t public_slots, uint32_t private_slots);
+ // Players joining or leaving a session (only the hosted one counts).
+ void MembersJoined(uint32_t session, uint32_t count);
+diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
+index aea142d..9b0f015 100644
+--- a/src/kernel/xam/apps/xgi_app.cpp
++++ b/src/kernel/xam/apps/xgi_app.cpp
+@@ -156,6 +156,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                                     num_slots_public, num_slots_private);
+         }
+       }
++      // Joining a Live session (a party invite skips one this console is in).
++      if ((flags & 0x1u) == 0 && (flags & 0x1Eu) != 0 && session_info_ptr) {
++        lan_sessions::Joined(session_ptr, memory_->TranslateVirtual<uint8_t*>(session_info_ptr));
++      }
+       if (system_link::Logging()) {
+         REXKRNL_INFO("net: XSessionCreate flags {:08X}, {} public / {} private slot(s){}", flags,
+                      num_slots_public, num_slots_private,
+diff --git a/src/system/lan_sessions.cpp b/src/system/lan_sessions.cpp
+index f1892a3..51eb280 100644
+--- a/src/system/lan_sessions.cpp
++++ b/src/system/lan_sessions.cpp
+@@ -24,7 +24,12 @@
+  *     custom data changes.
+  *   "OTLS", 1, 6 invite, u16 0, the inviter's XUID (8), then the session as in
+  *     an announcement (private ones too): XPartySendGameInvites, to every
+- *     member. A search for that session's XNKID then finds it.
++ *     member. A search for that session's XNKID then finds it. Once a host
++ *     has invited the party, it invites again every few seconds while it waits
++ *     in a party lobby (a session with no public slots, custom data state 2 or
++ *     4), so players who left after a match (observers) come back. A console
++ *     already in the session ignores the invite, and accepts the same one at
++ *     most every 30 seconds.
+  */
+ 
+ #include <rex/system/lan_sessions.h>
+@@ -73,6 +78,8 @@ constexpr auto kAnnounceEvery = std::chrono::milliseconds(1000);
+ constexpr auto kForgetAfter = std::chrono::milliseconds(3500);
+ constexpr auto kMemberEvery = std::chrono::milliseconds(1000);
+ constexpr auto kMemberForgetAfter = std::chrono::milliseconds(5000);
++constexpr auto kReinviteEvery = std::chrono::milliseconds(4000);
++constexpr auto kReacceptAfter = std::chrono::seconds(30);
+ constexpr uint32_t kPartyMembersChanged = 0x0E040002;  // XN_PARTY_MEMBERS_CHANGED
+ constexpr uint32_t kLiveInviteAccepted = 0x02000002;   // XN_LIVE_INVITE_ACCEPTED
+ 
+@@ -131,6 +138,11 @@ bool g_party_changed = false;  // XN_PARTY_MEMBERS_CHANGED to send
+ // This console's last hosted Live session, private ones too (for invites).
+ uint32_t g_invite_object = 0;
+ Session g_invite;
++bool g_party_inviting = false;  // the host has invited the party: invite again in its lobbies
++Clock::time_point g_last_reinvite;
++// The Live session this console is in (hosted or joined), by guest object; 0 = none.
++uint32_t g_joined_object = 0;
++uint64_t g_joined_key = 0;
+ // The last invite accepted.
+ bool g_invited = false;
+ uint64_t g_inviter = 0;
+@@ -322,6 +334,14 @@ void SendMember() {
+   g_last_member = Clock::now();
+ }
+ 
++// An invite to this console's last hosted session; g_mutex held.
++std::vector<uint8_t> InvitePacket() {
++  std::vector<uint8_t> out = Header(kInvite, 0);
++  Put64(out, system_link::PlayerXuid());
++  PutSession(out, g_invite);
++  return out;
++}
++
+ // Without g_mutex (listeners take the kernel's lock).
+ void NotifyPartyChanged(size_t others) {
+   if (system_link::Logging()) {
+@@ -381,10 +401,12 @@ void ReceiveParty(Reader& in, uint8_t kind, uint16_t extra, const uint8_t* data,
+       Session session;
+       if (!in.Bytes(session.info.data(), kInfoSize) || !ReadSessionBody(in, session)) return;
+       session.from = from;
+-      // The same invite often arrives twice (LAN copy and internet host).
++      // Already in that session; or the same invite again (it often arrives
++      // twice, LAN copy and internet host, and hosts repeat it).
+       const auto now = Clock::now();
++      if (g_joined_object && g_joined_key == KeyOf(session.info.data())) return;
+       if (g_invited && g_inviter == xuid && g_invited_session.info == session.info &&
+-          now - g_invited_at < std::chrono::seconds(3)) {
++          now - g_invited_at < kReacceptAfter) {
+         return;
+       }
+       g_invited_session = session;
+@@ -516,6 +538,12 @@ void Run() {
+         SendHellosAndPeers();
+         g_last_hello = now;
+       }
++      if (g_party_inviting && g_invite_object && g_invite.public_slots == 0 &&
++          (g_custom[0] == 2 || g_custom[0] == 4) && !g_members.empty() &&
++          now - g_last_reinvite >= kReinviteEvery) {
++        SendToLan(InvitePacket());
++        g_last_reinvite = now;
++      }
+       for (auto it = g_peers.begin(); it != g_peers.end();) {
+         it = now - it->second.heard > kPeerForgetAfter ? g_peers.erase(it) : std::next(it);
+       }
+@@ -600,6 +628,8 @@ void HostCreated(uint32_t session, const uint8_t* info, uint32_t flags, uint32_t
+   if (!system_link::Live() || !info) return;
+   Start();
+   std::lock_guard lock(g_mutex);
++  g_joined_object = session;
++  g_joined_key = KeyOf(info);
+   g_invite_object = session;
+   g_invite = Session{};
+   std::memcpy(g_invite.info.data(), info, kInfoSize);
+@@ -625,6 +655,13 @@ void HostCreated(uint32_t session, const uint8_t* info, uint32_t flags, uint32_t
+   }
+ }
+ 
++void Joined(uint32_t session, const uint8_t* info) {
++  if (!system_link::Live() || !info) return;
++  std::lock_guard lock(g_mutex);
++  g_joined_object = session;
++  g_joined_key = KeyOf(info);
++}
++
+ void HostModified(uint32_t session, uint32_t flags, uint32_t public_slots,
+                   uint32_t private_slots) {
+   std::lock_guard lock(g_mutex);
+@@ -660,6 +697,7 @@ void MembersLeft(uint32_t session, uint32_t count) {
+ void HostDeleted(uint32_t session) {
+   std::lock_guard lock(g_mutex);
+   if (session == g_invite_object) g_invite_object = 0;
++  if (session == g_joined_object) g_joined_object = 0;
+   if (!g_hosted_object || session != g_hosted_object) return;
+   SendToLan(HostedPacket(kGone));
+   g_hosted_object = 0;
+@@ -795,10 +833,9 @@ bool SendPartyGameInvites() {
+   if (!system_link::Live()) return false;
+   std::lock_guard lock(g_mutex);
+   if (!g_invite_object) return false;
+-  std::vector<uint8_t> out = Header(kInvite, 0);
+-  Put64(out, system_link::PlayerXuid());
+-  PutSession(out, g_invite);
+-  SendToLan(out);
++  SendToLan(InvitePacket());
++  g_party_inviting = true;
++  g_last_reinvite = Clock::now();
+   if (system_link::Logging()) {
+     REXSYS_INFO("lan sessions: invited the party ({} other member(s))", g_members.size());
+   }

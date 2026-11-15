@@ -975,6 +975,8 @@ went back to the Player Match menu. With three copies on one PC the fighters slo
 whenever neither fighter's window has focus (also with the third copy offline in Training), so
 test with a fighter in front.
 
+**After a match** the observer ends and deletes its session and goes back to the Player Match menu; the host's "Return to lobby" creates a new lobby session (custom data 00, then 02, 04 with players; 03 while a match runs), and the others have to be invited again. Invites that arrive while a console shows the results screen are kept by the game and used when it leaves that screen; a join while the next match is already running fails ("Unable to join session"). SDK patch 0010 makes the host invite again every 4 s in its lobby: tested with three copies, the observer was back 0.3 s after the host returned to the lobby, and the other fighter came back when it left its results screen.
+
 ---
 
 *Working notes with every detail and the full history: `work\DIARY.md`. Model formats and
