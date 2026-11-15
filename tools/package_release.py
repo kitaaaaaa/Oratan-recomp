@@ -49,7 +49,7 @@ Controls:
   Xbox controllers work as on the console.
   F1         Options: resolution (original, or native 1920x1080 /
              2560x1440 / 3840x2160), anti-aliasing, anisotropic filtering,
-             VSync, fullscreen, local versus, System Link
+             VSync, fullscreen, local versus, System Link, Xbox LIVE modes
   Alt+Enter  Switch between fullscreen and a window
   LB / RB    In Training: on the stage select, show the hidden stages
              (Distorted Shrine, Tangram); on the character select, with the
@@ -58,8 +58,14 @@ Controls:
 System Link (versus on the local network): on each PC, run
 allow-firewall.bat once, tick "System Link on the local network" in F1 and
 restart, then choose Multiplayer > System Link. The first player waits, the
-next one joins. "Xbox LIVE modes on the local network" in F1 does the same
-for Player Match (Quick Match, Custom Match).
+next one joins.
+
+Xbox LIVE modes (experimental): tick "Xbox LIVE modes" in F1 and restart,
+then use Multiplayer > Player Match. Quick Match finds a Custom Match lobby.
+In the Xbox LIVE Party Lobby (with observers) every PC with Xbox LIVE modes
+on is in the party: the host presses START to invite them all. Over the
+internet, the others type the host's address in F1 > Host address, and the
+host forwards UDP 1000-1002 and 3076 to their PC.
 
 Alpha: the game is playable from start to finish. Bug reports and logs are
 welcome at

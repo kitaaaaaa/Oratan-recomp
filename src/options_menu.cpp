@@ -7,7 +7,6 @@
 #include <imgui.h>
 
 #include "dual_monitor.h"
-#include "netplay.h"
 #include "settings.h"
 
 #include <algorithm>
@@ -72,6 +71,7 @@ int CurrentMsaa() {
 int g_system_link_at_startup = -1;
 int g_lan_live_at_startup = -1;  // SDK lan_live: Xbox LIVE modes on the LAN
 std::string g_player_name_at_startup;
+std::string g_live_host_at_startup;  // SDK live_host: the internet host
 
 constexpr size_t kMaxPlayerName = 15;  // a gamertag's length
 
@@ -83,6 +83,7 @@ void RememberStartupSettings() {
   g_system_link_at_startup = rex::cvar::Query<bool>("system_link") ? 1 : 0;
   g_lan_live_at_startup = rex::cvar::Query<bool>("lan_live") ? 1 : 0;
   g_player_name_at_startup = rex::cvar::GetFlagByName("player_name");
+  g_live_host_at_startup = rex::cvar::GetFlagByName("live_host");
 }
 
 OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
@@ -245,9 +246,17 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
   ImGui::TextDisabled(local_versus ? "Robot 1's view, and robot 2's view."
                                    : "Robot 1's view, and the LIVE MONITOR camera.");
 
-  DrawNetplay();
+  DrawOnline();
 
-  // System Link (LAN)
+  ImGui::Separator();
+  ImGui::TextDisabled("Settings are saved automatically.");
+  ImGui::End();
+}
+
+// System Link and the game's own Xbox LIVE modes (SDK system_link, lan_live,
+// live_host, player_name). The console's network identity is made at
+// startup, so changes apply on restart.
+void OptionsDialog::DrawOnline() {
   ImGui::Separator();
   bool system_link = rex::cvar::Query<bool>("system_link");
   if (ImGui::Checkbox("System Link on the local network (experimental)", &system_link)) {
@@ -255,7 +264,7 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     Save();
   }
   bool lan_live = rex::cvar::Query<bool>("lan_live");
-  if (ImGui::Checkbox("Xbox LIVE modes on the local network (experimental)", &lan_live)) {
+  if (ImGui::Checkbox("Xbox LIVE modes (experimental)", &lan_live)) {
     rex::cvar::SetFlagByName("lan_live", lan_live ? "true" : "false");
     Save();
   }
@@ -277,157 +286,40 @@ void OptionsDialog::OnDraw(ImGuiIO& io) {
     Save();
   }
   ImGui::EndDisabled();
+
+  ImGui::BeginDisabled(!lan_live);
+  static char host[128] = {};
+  static bool host_loaded = false;
+  if (!host_loaded) {
+    std::snprintf(host, sizeof(host), "%s", rex::cvar::GetFlagByName("live_host").c_str());
+    host_loaded = true;
+  }
+  ImGui::InputTextWithHint("Host address", "empty: you host", host, sizeof(host));
+  if (ImGui::IsItemDeactivatedAfterEdit()) {
+    std::string address = host;
+    address.erase(std::remove(address.begin(), address.end(), '"'), address.end());
+    address.erase(0, address.find_first_not_of(" \t"));
+    address.erase(address.find_last_not_of(" \t") + 1);
+    std::snprintf(host, sizeof(host), "%s", address.c_str());
+    rex::cvar::SetFlagByName("live_host", address);
+    Save();
+  }
+  ImGui::EndDisabled();
+
   ImGui::TextDisabled("Multiplayer > System Link on each PC: the first player");
   ImGui::TextDisabled("waits, the next one joins. Same game version everywhere.");
-  ImGui::TextDisabled("Xbox LIVE modes: Player Match (Quick or Custom Match)");
-  ImGui::TextDisabled("finds the players on this network instead of on Live.");
+  ImGui::TextDisabled("Xbox LIVE modes: Multiplayer > Player Match. The host makes a");
+  ImGui::TextDisabled("Custom Match lobby; the others pick Quick Match or the lobby.");
+  ImGui::TextDisabled("Over the internet the others type the host's internet address");
+  ImGui::TextDisabled("above, and the host forwards UDP 1000-1002 and 3076 to its PC.");
   const bool networked = system_link || lan_live;
   if (g_system_link_at_startup >= 0 &&
       ((system_link ? 1 : 0) != g_system_link_at_startup ||
        (lan_live ? 1 : 0) != g_lan_live_at_startup ||
-       (networked && rex::cvar::GetFlagByName("player_name") != g_player_name_at_startup))) {
+       (networked && rex::cvar::GetFlagByName("player_name") != g_player_name_at_startup) ||
+       (lan_live && rex::cvar::GetFlagByName("live_host") != g_live_host_at_startup))) {
     RestartNotice();
   }
-
-  ImGui::Separator();
-  ImGui::TextDisabled("Settings are saved automatically.");
-  ImGui::End();
-}
-
-// Netplay. It runs from boot so both games stay in step, so hosting, joining
-// and leaving restart the game with --netplay_host / --netplay_join added or
-// removed (never saved: a normal launch is offline). The port, address, delay
-// and controller are remembered.
-void OptionsDialog::DrawNetplay() {
-  using State = NetplayStatus::State;
-  const NetplayStatus status = GetNetplayStatus();
-  const ImVec4 kWarning(1.0f, 0.8f, 0.2f, 1.0f);
-  const ImVec4 kError(1.0f, 0.4f, 0.3f, 1.0f);
-  RelaunchArgs offline;
-  offline.remove = {"--netplay_host", "--netplay_join"};
-
-  ImGui::Separator();
-  if (!ImGui::CollapsingHeader("Netplay (experimental)",
-                               status.state == State::kOff ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
-    return;
-  }
-
-  // Shown to the host: what player 2 types in.
-  auto show_addresses = [](uint32_t port) {
-    const std::vector<std::string> addresses = LocalIpv4Addresses();
-    if (addresses.empty()) {
-      ImGui::TextDisabled("Player 2 joins with this PC's address and port %u.", port);
-    } else {
-      ImGui::TextDisabled("Player 2 joins with:");
-      for (const std::string& a : addresses) ImGui::BulletText("%s:%u", a.c_str(), port);
-    }
-    ImGui::TextDisabled("Over the internet: forward UDP port %u to this PC,", port);
-    ImGui::TextDisabled("or both use a VPN such as ZeroTier or Tailscale.");
-  };
-
-  switch (status.state) {
-    case State::kWaiting:
-      ImGui::Text("Waiting for player 2 on UDP port %u...", status.port);
-      show_addresses(status.port);
-      if (!status.message.empty()) ImGui::TextColored(kWarning, "%s", status.message.c_str());
-      ImGui::TextDisabled("The game starts once player 2 has joined.");
-      if (ImGui::Button("Cancel (play offline)")) CancelNetplayWait();
-      return;
-    case State::kJoining:
-      ImGui::Text("Joining %s...", status.peer.c_str());
-      if (ImGui::Button("Cancel (play offline)")) CancelNetplayWait();
-      return;
-    case State::kConnected:
-      ImGui::Text("Connected to %s as player %u.", status.peer.c_str(), status.player);
-      ImGui::Text("Input delay: %u ticks.", status.delay);
-      if (status.recent_stalls > 0) {
-        ImGui::TextDisabled("Last 30 s: waited for the other player %u times (%.0f ms).",
-                            status.recent_stalls, status.recent_stall_ms);
-      }
-      if (status.recent_stall_ms > 1000.0) {
-        ImGui::TextColored(kWarning, "Frequent waits: try a higher input delay next time.");
-      }
-      if (status.desynced) {
-        ImGui::TextColored(kError, "Out of sync since tick %u: the two games no longer match.",
-                           status.desync_tick);
-        ImGui::TextColored(kError, "Leave and start again (same game files, save and settings).");
-      }
-      if (restart_ && ImGui::Button("Leave netplay (restarts the game)")) restart_(offline);
-      return;
-    case State::kEnded:
-      if (!status.message.empty()) {
-        ImGui::TextColored(kWarning, "Netplay stopped: %s", status.message.c_str());
-      }
-      break;
-    case State::kOff:
-      break;
-  }
-
-  // Setting up a session.
-  static int role = rex::cvar::Query<std::string>("netplay_address").empty() ? 0 : 1;
-  ImGui::RadioButton("Host (player 1)", &role, 0);
-  ImGui::SameLine();
-  ImGui::RadioButton("Join (player 2)", &role, 1);
-
-  int pad = std::clamp(rex::cvar::Query<int>("netplay_pad"), 0, 3);
-  static const char* kPads[] = {"Controller 1", "Controller 2", "Controller 3", "Controller 4"};
-  if (ImGui::Combo("My controller", &pad, kPads, 4)) {
-    rex::cvar::SetFlagByName("netplay_pad", std::to_string(pad));
-    Save();
-  }
-
-  if (role == 0) {
-    int delay = std::clamp(rex::cvar::Query<int>("netplay_delay"), 1, 15);
-    if (ImGui::SliderInt("Input delay (ticks)", &delay, 1, 8)) {
-      rex::cvar::SetFlagByName("netplay_delay", std::to_string(delay));
-      Save();
-    }
-    ImGui::TextDisabled("Higher hides more lag: 3 on a LAN, 4-5 for about 40 ms.");
-    int port = rex::cvar::Query<int>("netplay_port");
-    if (ImGui::InputInt("UDP port", &port, 0)) {
-      port = std::clamp(port, 1024, 65535);
-      rex::cvar::SetFlagByName("netplay_port", std::to_string(port));
-      Save();
-    }
-    show_addresses(uint32_t(port));
-    if (restart_ && ImGui::Button("Host (restarts the game)")) {
-      RelaunchArgs args = offline;
-      args.add = {"--netplay_host=" + std::to_string(port)};
-      restart_(args);
-    }
-  } else {
-    static char address[128] = {};
-    static bool loaded = false;
-    if (!loaded) {
-      std::snprintf(address, sizeof(address), "%s",
-                    rex::cvar::Query<std::string>("netplay_address").c_str());
-      loaded = true;
-    }
-    ImGui::InputText("Host address", address, sizeof(address));
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-      rex::cvar::SetFlagByName("netplay_address", address);
-      Save();
-    }
-    ImGui::TextDisabled("The host's address and port, e.g. 192.168.1.20:7000.");
-    ImGui::TextDisabled("The host's input delay is used.");
-    std::string target = address;
-    target.erase(0, target.find_first_not_of(" \t"));
-    target.erase(target.find_last_not_of(" \t") + 1);
-    ImGui::BeginDisabled(target.empty());
-    if (restart_ && ImGui::Button("Join (restarts the game)")) {
-      if (target.find(':') == std::string::npos) {
-        target += ":" + std::to_string(rex::cvar::Query<int>("netplay_port"));
-      }
-      rex::cvar::SetFlagByName("netplay_address", target);
-      Save();
-      RelaunchArgs args = offline;
-      args.add = {"--netplay_join=" + target};
-      restart_(args);
-    }
-    ImGui::EndDisabled();
-  }
-  ImGui::TextDisabled("Both players need the same game files, save data and settings.");
-  ImGui::TextDisabled("The game restarts; both play together from the title screen.");
 }
 
 }  // namespace oratan

@@ -91,30 +91,6 @@ to the CPU. With split screen on but player 2 control off, the second view
 shows the LIVE MONITOR camera from Observer mode. With split screen on, Arcade's Continue and Game Over screens are
 also shown twice, side by side.
 
-### Online versus (experimental)
-
-Two players on different PCs can play versus over the internet or a local
-network. The game has to start in step on both PCs, so starting or leaving a
-session restarts it.
-
-1. **Player 1 hosts:** press **F1**, open **Netplay**, pick **Host**, and press
-   **Host (restarts the game)**. The game restarts and waits for player 2. The
-   panel lists this PC's addresses to give player 2.
-2. **Player 2 joins:** press **F1**, open **Netplay**, pick **Join**, type the
-   host's address and port (for example `192.168.1.20:7000`), and press
-   **Join (restarts the game)**.
-3. Once connected, both games start together and play from the title screen.
-   Player 2 drives the opponent, and each player sees their own robot.
-
-Both PCs need the same game files, save data and settings. Over the internet,
-the host forwards the UDP port (7000 by default) to their PC, or both players
-use a VPN such as ZeroTier or Tailscale. **Input delay** (set by the host)
-hides network lag: 3 suits a local network, 4-5 a connection of about 40 ms.
-The panel says when the game had to wait for the other player often, and
-warns if the two games fall out of sync. **Leave netplay** restarts the game
-offline. If the other player disconnects, the game carries on offline after 10
-seconds.
-
 ### System Link: versus on the local network (experimental)
 
 The game's own System Link mode, between PCs on the same network:
@@ -135,12 +111,32 @@ PC whose VPN adapters hide its LAN address can be given it with
 `--lan_address=127.0.0.2` and `--lan_address=127.0.0.3` (and
 `--background_pads=false`, so the controller drives the focused window).
 
-**Xbox LIVE modes on the local network** (also experimental): tick it in F1
-(and restart), and **Multiplayer > Player Match** works between the PCs on
-the network: **Custom Match** opens a lobby, **Quick Match** on another PC
-finds it. There are no friends lists or invites, private matches can't be
-found, and the **Xbox LIVE Party Lobby** (the mode with observer slots) needs
-an Xbox Live party, which isn't emulated yet.
+### Xbox LIVE modes: Player Match and the Party Lobby (experimental)
+
+Tick **Xbox LIVE modes** in F1 (and restart), and **Multiplayer > Player
+Match** works between PCs, on the local network or over the internet:
+
+- **Custom Match** opens a lobby; **Quick Match** on another PC finds it.
+- **Xbox LIVE Party Lobby** holds two fighters and up to the chosen number of
+  **observers**, who watch the match live. Every PC with Xbox LIVE modes on is
+  in one Xbox Live party: the host opens the lobby and presses **START**
+  (Invite Xbox LIVE Party), and the other PCs, waiting in the main menu,
+  join it.
+
+**Over the internet**, one player hosts: they leave **Host address** in F1
+empty and forward UDP ports 1000-1002 and 3076 to their PC (and allow
+`oratan.exe` through their firewall for those ports, from any address;
+`allow-firewall.bat` only opens them to the local network). Everyone else
+types the host's internet address (or name) in **Host address** and
+restarts. The host's PC relays the lobby to everyone, so players behind
+different routers can share one Party Lobby. Not yet tested between two real
+homes; tell us how it goes.
+
+There are no friends lists, and private Custom Matches can't be found.
+
+The older lockstep netplay (one versus match, the game restarted in step on
+both PCs) is still in the game from the command line: `--netplay_host=7000` on
+the host, `--netplay_join=<address>:7000` on the other PC.
 
 ### Hidden stages and Bradtos (Training)
 
@@ -170,10 +166,11 @@ crash or misbehave and are left out.
 | VSync, windowed mode | Working |
 | Local two-player versus with split screen | Working, experimental, see above |
 | Hidden stages (Distorted Shrine, Tangram) and Bradtos in Training | Working, see above |
-| Online versus (netplay, F1 → Netplay) | Experimental, tested on one PC; see above |
 | System Link (local network versus) | Working, experimental, see above |
-| Xbox Live Player Match (Quick / Custom Match) on the local network | Working, experimental, see above |
-| Xbox Live Party Lobby (observers), Xbox Live over the internet | Not yet supported |
+| Xbox Live Player Match (Quick / Custom Match) | Working, experimental, see above |
+| Xbox Live Party Lobby with observers | Working, experimental (tested with 3 copies on one PC) |
+| Xbox Live over the internet (host address) | Experimental, tested on one PC only |
+| Lockstep netplay (command line only) | Experimental, tested on one PC |
 
 ## Building from source
 

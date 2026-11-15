@@ -1,0 +1,1029 @@
+diff --git a/include/rex/system/lan_sessions.h b/include/rex/system/lan_sessions.h
+index 5362981..d3e840b 100644
+--- a/include/rex/system/lan_sessions.h
++++ b/include/rex/system/lan_sessions.h
+@@ -13,7 +13,9 @@
+  */
+ #pragma once
+ 
++#include <array>
+ #include <cstdint>
++#include <string>
+ #include <vector>
+ 
+ namespace rex::system::lan_sessions {
+@@ -45,4 +47,24 @@ void HostDeleted(uint32_t session);
+ uint32_t WriteSearchResults(uint8_t* buffer, uint32_t guest_address, uint32_t size,
+                             uint32_t max_results, const std::vector<uint64_t>* session_ids);
+ 
++// The Xbox Live party: this console and every other one it hears (on the LAN,
++// or through the internet host), so that titles' party lobbies fill up.
++struct PartyMember {
++  uint64_t xuid = 0;
++  std::string name;
++  std::array<uint8_t, 16> custom{};  // XPARTY_CUSTOM_DATA, as the title set it
++  bool local = false;
++};
++// The members in XUID order (the same on every console), this one included;
++// empty while no other console is heard.
++std::vector<PartyMember> PartyMembers();
++// XPartySetCustomData for this console (16 bytes).
++void SetPartyCustomData(const uint8_t* data);
++// XPartySendGameInvites: invites the other members to this console's last
++// hosted Live session, which they accept at once. False without one.
++bool SendPartyGameInvites();
++// XInviteGetAcceptedInfo: the XINVITE_INFO (84 bytes) of the last invite
++// accepted; false when there is none.
++bool AcceptedInvite(uint8_t* info);
++
+ }  // namespace rex::system::lan_sessions
+diff --git a/include/rex/system/system_link.h b/include/rex/system/system_link.h
+index 779b3d7..3abb644 100644
+--- a/include/rex/system/system_link.h
++++ b/include/rex/system/system_link.h
+@@ -41,6 +41,23 @@ uint32_t LocalAddress();
+ // (copies on one PC each need their own), otherwise any address.
+ uint32_t BindAddress();
+ 
++// --live_host: the PC hosting Xbox LIVE modes over the internet (an IPv4 or a
++// name, resolved once), network byte order; 0 when not set or not found.
++uint32_t LiveHost();
++
++// The address in this console's XNADDR, network byte order. Usually
++// LocalAddress(); with --live_host a made-up 10.x.y.z of this PC's own, as
++// players over the internet often share a LAN address (192.168.1.10).
++uint32_t IdentityAddress();
++
++// Over the internet a console's XNADDR address (its identity) isn't where it
++// is reached. Routes map one to the other, network byte order.
++void SetRoute(uint32_t identity, uint32_t reach);
++// Where to send for an XNADDR address (the address itself without a route).
++uint32_t RouteTo(uint32_t identity);
++// The XNADDR address of a console reached at `reach` (`reach` without a route).
++uint32_t IdentityAt(uint32_t reach);
++
+ // A distinct MAC address and online identification for an address.
+ void FillIdentity(uint32_t address, uint8_t enet[6], uint8_t online[20]);
+ 
+diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
+index cdf5a0a..aea142d 100644
+--- a/src/kernel/xam/apps/xgi_app.cpp
++++ b/src/kernel/xam/apps/xgi_app.cpp
+@@ -339,31 +339,21 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       return X_E_SUCCESS;
+     }
+     case 0x000B001B: {
+-      assert_true(!buffer_length || buffer_length == 32);
++      // XSessionSearchByID (20 bytes): user index, the XNKID (8 bytes), the
++      // results buffer size, the results buffer.
++      assert_true(!buffer_length || buffer_length == 20);
+ 
+       uint32_t user_index = memory::load_and_swap<uint32_t>(buffer + 0);
+-      uint32_t num_session_ids = memory::load_and_swap<uint32_t>(buffer + 4);
+-      uint32_t session_ids_ptr = memory::load_and_swap<uint32_t>(buffer + 8);
++      uint64_t session_id;
++      std::memcpy(&session_id, buffer + 4, 8);
+       uint32_t results_buffer_size = memory::load_and_swap<uint32_t>(buffer + 12);
+       uint32_t search_results_ptr = memory::load_and_swap<uint32_t>(buffer + 16);
+-      uint32_t reserved1 = memory::load_and_swap<uint32_t>(buffer + 20);
+-      uint32_t reserved2 = memory::load_and_swap<uint32_t>(buffer + 24);
+-      uint32_t reserved3 = memory::load_and_swap<uint32_t>(buffer + 28);
+ 
+-      REXKRNL_DEBUG("XSessionSearchByID({}, {:08X}, {:08X}, {:08X}, {:08X}, {}, {}, {})",
+-                    user_index, num_session_ids, session_ids_ptr, results_buffer_size,
+-                    search_results_ptr, reserved1, reserved2, reserved3);
+-      {
+-        std::vector<uint64_t> ids;
+-        const uint8_t* id_bytes =
+-            session_ids_ptr ? memory_->TranslateVirtual<uint8_t*>(session_ids_ptr) : nullptr;
+-        for (uint32_t i = 0; id_bytes && i < num_session_ids && i < 64; ++i) {
+-          uint64_t id;
+-          std::memcpy(&id, id_bytes + i * 8, 8);
+-          ids.push_back(id);
+-        }
+-        WriteSearchResults(search_results_ptr, results_buffer_size, num_session_ids, &ids);
+-      }
++      REXKRNL_DEBUG("XSessionSearchByID({}, {:016X}, {:08X}, {:08X})", user_index,
++                    memory::load_and_swap<uint64_t>(buffer + 4), results_buffer_size,
++                    search_results_ptr);
++      const std::vector<uint64_t> ids{session_id};
++      WriteSearchResults(search_results_ptr, results_buffer_size, 1, &ids);
+ 
+       return X_E_SUCCESS;
+     }
+diff --git a/src/kernel/xam/apps/xlivebase_app.cpp b/src/kernel/xam/apps/xlivebase_app.cpp
+index 4c41940..382b7ee 100644
+--- a/src/kernel/xam/apps/xlivebase_app.cpp
++++ b/src/kernel/xam/apps/xlivebase_app.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/kernel/xam/apps/xlivebase_app.h>
+ #include <rex/logging.h>
++#include <rex/system/lan_sessions.h>
+ #include <rex/system/system_link.h>
+ #include <rex/thread.h>
+ 
+@@ -65,6 +66,21 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t buffer_pt
+       return X_E_FAIL;
+     }
+     case 0x00058023: {
++      // XInviteGetAcceptedInfo. The second argument is an argument list of
++      // 16-byte entries (u32 type, u32, u64 value): a pointer to the user
++      // index, then one to the XINVITE_INFO to fill. --lan_live: a party game
++      // invite.
++      if (buffer_length && system_link::Live()) {
++        auto* arguments = memory_->TranslateVirtual<uint8_t*>(buffer_length);
++        const uint32_t info_ptr = uint32_t(memory::load_and_swap<uint64_t>(arguments + 16 + 8));
++        if (info_ptr &&
++            lan_sessions::AcceptedInvite(memory_->TranslateVirtual<uint8_t*>(info_ptr))) {
++          if (system_link::Logging()) {
++            REXKRNL_INFO("net: XInviteGetAcceptedInfo -> the party's game invite");
++          }
++          return X_E_SUCCESS;
++        }
++      }
+       REXKRNL_DEBUG(
+           "CXLiveMessaging::XMessageGameInviteGetAcceptedInfo({:08X}, {:08X}) "
+           "unimplemented",
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index b02ee1b..e4c2290 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -668,7 +668,7 @@ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+   if (system_link::Enabled()) {
+     // A console on the LAN, not signed in to Live: its own address and a
+     // MAC address of its own, for peers to tell copies apart.
+-    const uint32_t address = system_link::LocalAddress();
++    const uint32_t address = system_link::IdentityAddress();
+     const bool live = system_link::Live();
+     addr_ptr->ina.s_addr = address;
+     addr_ptr->inaOnline.s_addr = live ? address : 0;
+@@ -739,6 +739,8 @@ u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mappe
+   }
+   uint32_t address = xn_addr->ina.s_addr ? uint32_t(xn_addr->ina.s_addr)
+                                          : uint32_t(xn_addr->inaOnline.s_addr);
++  // Over the internet: where that console is reached.
++  address = system_link::RouteTo(address);
+   {
+     std::lock_guard lock(g_xnaddr_mutex);
+     g_known_xnaddrs[address] = *xn_addr;
+@@ -763,8 +765,9 @@ u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, ppc_ptr_t<XNADDR> x
+     *xn_addr = it->second;
+   } else {
+     std::memset(static_cast<XNADDR*>(xn_addr), 0, sizeof(XNADDR));
+-    xn_addr->ina.s_addr = address;
+-    system_link::FillIdentity(address, xn_addr->abEnet, xn_addr->abOnline);
++    const uint32_t identity = system_link::IdentityAt(address);
++    xn_addr->ina.s_addr = identity;
++    system_link::FillIdentity(identity, xn_addr->abEnet, xn_addr->abOnline);
+   }
+   if (xid) {
+     std::memset(xid, 0, 8);
+diff --git a/src/kernel/xam/xam_party.cpp b/src/kernel/xam/xam_party.cpp
+index d75d65e..27a91a6 100644
+--- a/src/kernel/xam/xam_party.cpp
++++ b/src/kernel/xam/xam_party.cpp
+@@ -11,10 +11,17 @@
+ 
+ #include <rex/kernel/xam/private.h>
+ #include <rex/hook.h>
++#include <rex/logging.h>
++#include <rex/memory/utils.h>
+ #include <rex/types.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/lan_sessions.h>
++#include <rex/system/system_link.h>
+ #include <rex/system/xtypes.h>
+ 
++#include <algorithm>
++#include <cstring>
++
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
+@@ -22,18 +29,63 @@ namespace rex {
+ namespace kernel {
+ namespace xam {
+ 
+-u32 XamPartyGetUserList_entry(u32 player_count, mapped_u32 party_list) {
+-  // 5345085D wants specifically this code to skip loading party data.
+-  // This code is not documented in NT_STATUS code list
+-  return 0x807D0003;
++// --lan_live: the party is this console and every other one heard (see
++// lan_sessions). XPARTY_USER_LIST: a count, then 32 XPARTY_USER_INFO of 120
++// bytes (XUID, gamertag, user index, NAT type, title ID, flags, XSESSION_INFO,
++// XPARTY_CUSTOM_DATA at 104).
++u32 XamPartyGetUserList_entry(u32 version, mapped_void party_list) {
++  constexpr uint32_t kListSize = 3848, kUserSize = 120, kMaxUsers = 32;
++  const auto members = rex::system::lan_sessions::PartyMembers();
++  if (members.empty() || !party_list) {
++    // 5345085D wants specifically this code to skip loading party data.
++    // This code is not documented in NT_STATUS code list
++    return 0x807D0003;
++  }
++  auto* list = REX_KERNEL_MEMORY()->TranslateVirtual<uint8_t*>(party_list.guest_address());
++  std::memset(list, 0, kListSize);
++  const uint32_t count = std::min<uint32_t>(uint32_t(members.size()), kMaxUsers);
++  memory::store_and_swap<uint32_t>(list, count);
++  for (uint32_t i = 0; i < count; ++i) {
++    const auto& member = members[i];
++    uint8_t* user = list + 8 + i * kUserSize;
++    memory::store_and_swap<uint64_t>(user + 0, member.xuid);
++    std::memcpy(user + 8, member.name.data(), std::min<size_t>(member.name.size(), 15));
++    memory::store_and_swap<uint32_t>(user + 24, member.local ? 0 : 0xFFFFFFFF);
++    memory::store_and_swap<uint32_t>(user + 28, 1);  // XONLINE_NAT_OPEN
++    memory::store_and_swap<uint32_t>(user + 32, REX_KERNEL_STATE()->title_id());
++    memory::store_and_swap<uint32_t>(user + 36, member.local ? 1 : 0);  // XPARTY_USER_ISLOCAL
++    std::memcpy(user + 104, member.custom.data(), member.custom.size());
++  }
++  if (rex::system::system_link::Logging()) {
++    REXKRNL_INFO("net: XamPartyGetUserList -> {} member(s)", count);
++  }
++  return X_ERROR_SUCCESS;
+ }
+ 
+-u32 XamPartySendGameInvites_entry(u32 r3, u32 r4, u32 r5) {
+-  return X_ERROR_FUNCTION_FAILED;
++u32 XamPartySendGameInvites_entry(u32 version, u32 user_index, u32 r5, u32 overlapped) {
++  const bool sent = rex::system::lan_sessions::SendPartyGameInvites();
++  if (rex::system::system_link::Logging()) {
++    REXKRNL_INFO("net: XamPartySendGameInvites({}) -> {}", user_index, sent ? "sent" : "no session");
++  }
++  const X_RESULT result = sent ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
++  if (overlapped) {
++    REX_KERNEL_STATE()->CompleteOverlappedImmediate(overlapped, result);
++    return X_ERROR_IO_PENDING;
++  }
++  return result;
+ }
+ 
+-u32 XamPartySetCustomData_entry(u32 r3, u32 r4, u32 r5) {
+-  return X_ERROR_FUNCTION_FAILED;
++u32 XamPartySetCustomData_entry(u32 version, u32 user_index, mapped_void data) {
++  if (!rex::system::system_link::Live() || !data) {
++    return X_ERROR_FUNCTION_FAILED;
++  }
++  const auto* bytes = REX_KERNEL_MEMORY()->TranslateVirtual<uint8_t*>(data.guest_address());
++  rex::system::lan_sessions::SetPartyCustomData(bytes);
++  if (rex::system::system_link::Logging()) {
++    REXKRNL_INFO("net: XamPartySetCustomData({}) {:02X} {:02X} {:02X} {:02X} {:02X}", user_index,
++                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
++  }
++  return X_ERROR_SUCCESS;
+ }
+ 
+ u32 XamPartyGetBandwidth_entry(u32 r3, u32 r4) {
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index ed8e802..916d345 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -20,6 +20,7 @@
+ REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
+                     "Don't display any UI, using defaults for prompts as needed");
+ #include <rex/kernel/xam/private.h>
++#include <rex/system/system_link.h>
+ #include <rex/hook.h>
+ #include <rex/types.h>
+ #include <rex/system/xtypes.h>
+@@ -584,6 +585,10 @@ void XamShowDirtyDiscErrorUI_entry(u32 user_index) {
+ }
+ 
+ u32 XamShowPartyUI_entry(u32 r3, u32 r4) {
++  // --lan_live: the party forms by itself (lan_sessions), nothing to show.
++  if (rex::system::system_link::Live()) {
++    return xeXamShowUnavailableUI("XamShowPartyUI", r3);
++  }
+   return X_ERROR_FUNCTION_FAILED;
+ }
+ 
+diff --git a/src/system/lan_sessions.cpp b/src/system/lan_sessions.cpp
+index 1fcf704..f1892a3 100644
+--- a/src/system/lan_sessions.cpp
++++ b/src/system/lan_sessions.cpp
+@@ -7,6 +7,24 @@
+  *   XSESSION_INFO (60 bytes), u32 flags, u32 public slots, u32 private slots,
+  *   u32 filled public, u32 filled private, u16 contexts, u16 properties,
+  *   contexts (u32 id, u32 value), properties (u32 id, u16 size, bytes).
++ *   The u16 after the kind is 1 when a hub relays another console's packet.
++ *
++ * Over the internet (--live_host), the same port also carries:
++ *   "OTLS", 1, 3 hello, u16 0, the sender's XNADDR address (4 bytes): a
++ *     joiner, once a second, to the host it was given.
++ *   "OTLS", 1, 4 peers, u16 count, count x (XNADDR address, address it is
++ *     reached at; 0 = the sender): the hub (whoever gets hellos), once a
++ *     second, to each console that said hello.
++ * The hub sends its announcements to those consoles and relays theirs to each
++ * other, so one lobby can hold players from several networks.
++ *
++ * The Xbox Live party (every console heard) uses it too, relayed the same way:
++ *   "OTLS", 1, 5 member, u16 0, XUID (8), gamertag (16), XPARTY_CUSTOM_DATA
++ *     (16), XNADDR address (4): every console, once a second and when its
++ *     custom data changes.
++ *   "OTLS", 1, 6 invite, u16 0, the inviter's XUID (8), then the session as in
++ *     an announcement (private ones too): XPartySendGameInvites, to every
++ *     member. A search for that session's XNKID then finds it.
+  */
+ 
+ #include <rex/system/lan_sessions.h>
+@@ -19,10 +37,12 @@
+ #include <map>
+ #include <mutex>
+ #include <thread>
++#include <utility>
+ #include <vector>
+ 
+ #include <rex/logging.h>
+ #include <rex/platform.h>
++#include <rex/system/kernel_state.h>
+ #include <rex/system/system_link.h>
+ 
+ #if REX_PLATFORM_WIN32
+@@ -45,9 +65,16 @@ using Clock = std::chrono::steady_clock;
+ constexpr uint16_t kPort = 3076;
+ constexpr char kMagic[4] = {'O', 'T', 'L', 'S'};
+ constexpr uint8_t kVersion = 1;
+-constexpr uint8_t kAnnounce = 1, kGone = 2;
++constexpr uint8_t kAnnounce = 1, kGone = 2, kHello = 3, kPeers = 4, kMember = 5, kInvite = 6;
++constexpr uint16_t kRelayed = 1;
++constexpr auto kHelloEvery = std::chrono::milliseconds(1000);
++constexpr auto kPeerForgetAfter = std::chrono::milliseconds(10000);
+ constexpr auto kAnnounceEvery = std::chrono::milliseconds(1000);
+ constexpr auto kForgetAfter = std::chrono::milliseconds(3500);
++constexpr auto kMemberEvery = std::chrono::milliseconds(1000);
++constexpr auto kMemberForgetAfter = std::chrono::milliseconds(5000);
++constexpr uint32_t kPartyMembersChanged = 0x0E040002;  // XN_PARTY_MEMBERS_CHANGED
++constexpr uint32_t kLiveInviteAccepted = 0x02000002;   // XN_LIVE_INVITE_ACCEPTED
+ 
+ constexpr uint32_t kInfoSize = 60;          // XSESSION_INFO
+ constexpr uint32_t kResultSize = 92;        // XSESSION_SEARCHRESULT
+@@ -82,6 +109,34 @@ Clock::time_point g_last_announce;
+ // Sessions heard on the LAN, by XNKID.
+ std::map<uint64_t, Session> g_heard;
+ 
++// Consoles that said hello (we are their hub), by XNADDR address.
++struct Peer {
++  uint32_t address = 0;  // where they're reached, network byte order
++  uint16_t port = 0;     // their directory port as seen here (NAT), network byte order
++  Clock::time_point heard;
++};
++std::map<uint32_t, Peer> g_peers;
++Clock::time_point g_last_hello;
++
++// The party: the other consoles heard, by XUID, and this console's custom data.
++struct Member {
++  std::array<char, 16> name{};
++  std::array<uint8_t, 16> custom{};
++  Clock::time_point heard;
++};
++std::map<uint64_t, Member> g_members;
++std::array<uint8_t, 16> g_custom{};
++Clock::time_point g_last_member;
++bool g_party_changed = false;  // XN_PARTY_MEMBERS_CHANGED to send
++// This console's last hosted Live session, private ones too (for invites).
++uint32_t g_invite_object = 0;
++Session g_invite;
++// The last invite accepted.
++bool g_invited = false;
++uint64_t g_inviter = 0;
++Session g_invited_session;
++Clock::time_point g_invited_at;
++
+ #if REX_PLATFORM_WIN32
+ using NativeSocket = SOCKET;
+ constexpr NativeSocket kNoSocket = INVALID_SOCKET;
+@@ -136,18 +191,22 @@ class Reader {
+   size_t at_ = 0;
+ };
+ 
+-// The hosted session as a packet; g_mutex held.
+-std::vector<uint8_t> HostedPacket(uint8_t kind) {
++std::vector<uint8_t> Header(uint8_t kind, uint16_t extra) {
+   std::vector<uint8_t> out(kMagic, kMagic + 4);
+   out.push_back(kVersion);
+   out.push_back(kind);
+-  Put16(out, 0);
+-  out.insert(out.end(), g_hosted.info.begin(), g_hosted.info.end());
+-  Put32(out, g_hosted.flags);
+-  Put32(out, g_hosted.public_slots);
+-  Put32(out, g_hosted.private_slots);
+-  Put32(out, g_hosted.filled_public);
+-  Put32(out, g_hosted.filled_private);
++  Put16(out, extra);
++  return out;
++}
++
++// A session of this console's, as announced; g_mutex held.
++void PutSession(std::vector<uint8_t>& out, const Session& session) {
++  out.insert(out.end(), session.info.begin(), session.info.end());
++  Put32(out, session.flags);
++  Put32(out, session.public_slots);
++  Put32(out, session.private_slots);
++  Put32(out, session.filled_public);
++  Put32(out, session.filled_private);
+   Put16(out, uint16_t(g_contexts.size()));
+   Put16(out, uint16_t(g_properties.size()));
+   for (const auto& [id, value] : g_contexts) {
+@@ -159,9 +218,51 @@ std::vector<uint8_t> HostedPacket(uint8_t kind) {
+     Put16(out, uint16_t(bytes.size()));
+     out.insert(out.end(), bytes.begin(), bytes.end());
+   }
++}
++
++// The hosted session as a packet; g_mutex held.
++std::vector<uint8_t> HostedPacket(uint8_t kind) {
++  std::vector<uint8_t> out = Header(kind, 0);
++  PutSession(out, g_hosted);
+   return out;
+ }
+ 
++// The rest of an announcement after XSESSION_INFO.
++bool ReadSessionBody(Reader& in, Session& s) {
++  uint16_t contexts = 0, properties = 0;
++  if (!in.U32(&s.flags) || !in.U32(&s.public_slots) || !in.U32(&s.private_slots) ||
++      !in.U32(&s.filled_public) || !in.U32(&s.filled_private) || !in.U16(&contexts) ||
++      !in.U16(&properties)) {
++    return false;
++  }
++  for (uint16_t i = 0; i < contexts; ++i) {
++    uint32_t id = 0, value = 0;
++    if (!in.U32(&id) || !in.U32(&value)) return false;
++    s.contexts.emplace_back(id, value);
++  }
++  for (uint16_t i = 0; i < properties; ++i) {
++    uint32_t id = 0;
++    uint16_t length = 0;
++    if (!in.U32(&id) || !in.U16(&length) || length > kMaxPropertyBytes) return false;
++    std::vector<uint8_t> bytes(length);
++    if (!in.Bytes(bytes.data(), length)) return false;
++    s.properties.emplace_back(id, std::move(bytes));
++  }
++  return true;
++}
++
++// Address and port in network byte order.
++void SendTo(const std::vector<uint8_t>& packet, uint32_t address, uint16_t port) {
++  if (g_socket == kNoSocket || !address) return;
++  sockaddr_in to{};
++  to.sin_family = AF_INET;
++  to.sin_port = port;
++  to.sin_addr.s_addr = address;
++  sendto(g_socket, reinterpret_cast<const char*>(packet.data()), int(packet.size()), 0,
++         reinterpret_cast<sockaddr*>(&to), sizeof(to));
++}
++
++// To every console on the LAN, the internet host and the hub's peers; g_mutex held.
+ void SendToLan(const std::vector<uint8_t>& packet) {
+   if (g_socket == kNoSocket) return;
+   std::vector<uint32_t> targets = system_link::BroadcastCopies();
+@@ -169,25 +270,181 @@ void SendToLan(const std::vector<uint8_t>& packet) {
+     const auto broadcasts = system_link::BroadcastAddresses();
+     targets.insert(targets.end(), broadcasts.begin(), broadcasts.end());
+   }
++  targets.push_back(system_link::LiveHost());
+   for (const uint32_t address : targets) {
+-    sockaddr_in to{};
+-    to.sin_family = AF_INET;
+-    to.sin_port = htons(kPort);
+-    to.sin_addr.s_addr = address;
+-    sendto(g_socket, reinterpret_cast<const char*>(packet.data()), int(packet.size()), 0,
+-           reinterpret_cast<sockaddr*>(&to), sizeof(to));
++    SendTo(packet, address, htons(kPort));
++  }
++  for (const auto& [identity, peer] : g_peers) {
++    SendTo(packet, peer.address, peer.port);
++  }
++}
++
++// Once a second: hello to the internet host; the peer list to our peers. g_mutex held.
++void SendHellosAndPeers() {
++  if (const uint32_t host = system_link::LiveHost()) {
++    std::vector<uint8_t> hello = Header(kHello, 0);
++    const uint32_t self = system_link::IdentityAddress();
++    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&self);
++    hello.insert(hello.end(), bytes, bytes + 4);
++    SendTo(hello, host, htons(kPort));
++  }
++  if (g_peers.empty()) return;
++  std::vector<uint8_t> list = Header(kPeers, uint16_t(g_peers.size() + 1));
++  const auto add = [&](uint32_t identity, uint32_t reach) {
++    const uint8_t* a = reinterpret_cast<const uint8_t*>(&identity);
++    const uint8_t* b = reinterpret_cast<const uint8_t*>(&reach);
++    list.insert(list.end(), a, a + 4);
++    list.insert(list.end(), b, b + 4);
++  };
++  add(system_link::IdentityAddress(), 0);
++  for (const auto& [identity, peer] : g_peers) add(identity, peer.address);
++  for (const auto& [identity, peer] : g_peers) SendTo(list, peer.address, peer.port);
++}
++
++void Put64(std::vector<uint8_t>& out, uint64_t v) {
++  Put32(out, uint32_t(v >> 32));
++  Put32(out, uint32_t(v));
++}
++
++// This console as a party member; g_mutex held.
++void SendMember() {
++  std::vector<uint8_t> out = Header(kMember, 0);
++  Put64(out, system_link::PlayerXuid());
++  std::array<char, 16> name{};
++  const std::string player = system_link::PlayerName();
++  std::memcpy(name.data(), player.data(), std::min(player.size(), name.size() - 1));
++  out.insert(out.end(), name.begin(), name.end());
++  out.insert(out.end(), g_custom.begin(), g_custom.end());
++  const uint32_t self = system_link::IdentityAddress();
++  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&self);
++  out.insert(out.end(), bytes, bytes + 4);
++  SendToLan(out);
++  g_last_member = Clock::now();
++}
++
++// Without g_mutex (listeners take the kernel's lock).
++void NotifyPartyChanged(size_t others) {
++  if (system_link::Logging()) {
++    REXSYS_INFO("lan sessions: the party changed ({} other member(s))", others);
++  }
++  if (auto* kernel = REX_KERNEL_STATE()) {
++    kernel->BroadcastNotification(kPartyMembersChanged, 0);
+   }
+ }
+ 
+-void Receive(const uint8_t* data, size_t size, uint32_t from) {
++// A hub passes its peers' packets on to the others; g_mutex held.
++void RelayFromPeer(const uint8_t* data, size_t size, uint32_t from) {
++  bool from_peer = false;
++  for (const auto& [identity, peer] : g_peers) from_peer |= peer.address == from;
++  if (!from_peer) return;
++  std::vector<uint8_t> relayed(data, data + size);
++  relayed[6] = uint8_t(kRelayed >> 8);
++  relayed[7] = uint8_t(kRelayed);
++  for (const auto& [identity, peer] : g_peers) {
++    if (peer.address != from) SendTo(relayed, peer.address, peer.port);
++  }
++}
++
++// A party member or an invite.
++void ReceiveParty(Reader& in, uint8_t kind, uint16_t extra, const uint8_t* data, size_t size,
++                  uint32_t from) {
++  uint8_t bytes[8];
++  if (!in.Bytes(bytes, 8)) return;
++  uint64_t xuid = 0;
++  for (const uint8_t b : bytes) xuid = xuid << 8 | b;
++  if (xuid == system_link::PlayerXuid()) return;  // our own
++  bool changed = false, invited = false;
++  size_t others = 0;
++  {
++    std::lock_guard lock(g_mutex);
++    if (extra != kRelayed) RelayFromPeer(data, size, from);
++    if (kind == kMember) {
++      Member member;
++      uint32_t identity = 0;
++      if (!in.Bytes(member.name.data(), 16) || !in.Bytes(member.custom.data(), 16) ||
++          !in.Bytes(&identity, 4)) {
++        return;
++      }
++      member.name.back() = 0;
++      if (extra != kRelayed && identity && (system_link::LiveHost() || !g_peers.empty())) {
++        system_link::SetRoute(identity, from);
++      }
++      const auto it = g_members.find(xuid);
++      changed = it == g_members.end() || it->second.custom != member.custom;
++      if (it == g_members.end() && system_link::Logging()) {
++        REXSYS_INFO("lan sessions: {} joined the party", member.name.data());
++      }
++      member.heard = Clock::now();
++      g_members[xuid] = member;
++      others = g_members.size();
++    } else {
++      Session session;
++      if (!in.Bytes(session.info.data(), kInfoSize) || !ReadSessionBody(in, session)) return;
++      session.from = from;
++      // The same invite often arrives twice (LAN copy and internet host).
++      const auto now = Clock::now();
++      if (g_invited && g_inviter == xuid && g_invited_session.info == session.info &&
++          now - g_invited_at < std::chrono::seconds(3)) {
++        return;
++      }
++      g_invited_session = session;
++      g_invited_at = now;
++      g_invited = true;
++      g_inviter = xuid;
++      invited = true;
++      if (system_link::Logging()) {
++        REXSYS_INFO("lan sessions: accepted a game invite from {}", system_link::Dotted(from));
++      }
++    }
++  }
++  if (changed) NotifyPartyChanged(others);
++  if (invited) {
++    if (auto* kernel = REX_KERNEL_STATE()) {
++      kernel->BroadcastNotification(kLiveInviteAccepted, 0);
++    }
++  }
++}
++
++// `from` and `from_port` in network byte order.
++void Receive(const uint8_t* data, size_t size, uint32_t from, uint16_t from_port) {
+   Reader in(data, size);
+   char magic[4];
+   uint8_t version = 0, kind = 0;
+-  uint16_t reserved = 0;
+-  Session s;
++  uint16_t extra = 0;
+   if (!in.Bytes(magic, 4) || std::memcmp(magic, kMagic, 4) != 0 || !in.U8(&version) ||
+-      version != kVersion || !in.U8(&kind) || !in.U16(&reserved) ||
+-      !in.Bytes(s.info.data(), kInfoSize)) {
++      version != kVersion || !in.U8(&kind) || !in.U16(&extra)) {
++    return;
++  }
++  if (kind == kHello) {
++    uint32_t identity = 0;
++    if (!in.Bytes(&identity, 4) || !identity) return;
++    std::lock_guard lock(g_mutex);
++    Peer& peer = g_peers[identity];
++    if (!peer.address && system_link::Logging()) {
++      REXSYS_INFO("lan sessions: {} joined over the internet from {}",
++                  system_link::Dotted(identity), system_link::Dotted(from));
++    }
++    peer.address = from;
++    peer.port = from_port;
++    peer.heard = Clock::now();
++    system_link::SetRoute(identity, from);
++    return;
++  }
++  if (kind == kPeers) {
++    const uint32_t self = system_link::IdentityAddress();
++    for (uint16_t i = 0; i < extra; ++i) {
++      uint32_t identity = 0, reach = 0;
++      if (!in.Bytes(&identity, 4) || !in.Bytes(&reach, 4)) return;
++      if (identity != self) system_link::SetRoute(identity, reach ? reach : from);
++    }
++    return;
++  }
++  if (kind == kMember || kind == kInvite) {
++    ReceiveParty(in, kind, extra, data, size, from);
++    return;
++  }
++  Session s;
++  if (!in.Bytes(s.info.data(), kInfoSize)) {
+     return;
+   }
+   const uint64_t key = KeyOf(s.info.data());
+@@ -195,31 +452,25 @@ void Receive(const uint8_t* data, size_t size, uint32_t from) {
+   if (g_hosted_object && key == KeyOf(g_hosted.info.data())) {
+     return;  // our own
+   }
++  if (extra != kRelayed) {
++    // Over the internet, straight from the announcer: its XNADDR address is
++    // reached where the packet came from.
++    if (system_link::LiveHost() || !g_peers.empty()) {
++      uint32_t announcer = 0;
++      std::memcpy(&announcer, s.info.data() + 8, 4);
++      system_link::SetRoute(announcer, from);
++    }
++    RelayFromPeer(data, size, from);
++  }
+   if (kind == kGone) {
+     if (g_heard.erase(key) && system_link::Logging()) {
+       REXSYS_INFO("lan sessions: {} ended its session", system_link::Dotted(from));
+     }
+     return;
+   }
+-  uint16_t contexts = 0, properties = 0;
+-  if (!in.U32(&s.flags) || !in.U32(&s.public_slots) || !in.U32(&s.private_slots) ||
+-      !in.U32(&s.filled_public) || !in.U32(&s.filled_private) || !in.U16(&contexts) ||
+-      !in.U16(&properties)) {
++  if (!ReadSessionBody(in, s)) {
+     return;
+   }
+-  for (uint16_t i = 0; i < contexts; ++i) {
+-    uint32_t id = 0, value = 0;
+-    if (!in.U32(&id) || !in.U32(&value)) return;
+-    s.contexts.emplace_back(id, value);
+-  }
+-  for (uint16_t i = 0; i < properties; ++i) {
+-    uint32_t id = 0;
+-    uint16_t length = 0;
+-    if (!in.U32(&id) || !in.U16(&length) || length > kMaxPropertyBytes) return;
+-    std::vector<uint8_t> bytes(length);
+-    if (!in.Bytes(bytes.data(), length)) return;
+-    s.properties.emplace_back(id, std::move(bytes));
+-  }
+   s.from = from;
+   s.heard = Clock::now();
+   const bool is_new = g_heard.find(key) == g_heard.end();
+@@ -236,17 +487,43 @@ void Receive(const uint8_t* data, size_t size, uint32_t from) {
+ 
+ void Run() {
+   for (;;) {
++    bool party_changed = false;
++    size_t others = 0;
+     {
+       std::lock_guard lock(g_mutex);
+       const auto now = Clock::now();
++      if (now - g_last_member >= kMemberEvery) {
++        SendMember();
++      }
++      for (auto it = g_members.begin(); it != g_members.end();) {
++        if (now - it->second.heard > kMemberForgetAfter) {
++          if (system_link::Logging()) {
++            REXSYS_INFO("lan sessions: {} left the party", it->second.name.data());
++          }
++          it = g_members.erase(it);
++          g_party_changed = true;
++        } else {
++          ++it;
++        }
++      }
++      party_changed = std::exchange(g_party_changed, false);
++      others = g_members.size();
+       if (g_hosted_object && now - g_last_announce >= kAnnounceEvery) {
+         SendToLan(HostedPacket(kAnnounce));
+         g_last_announce = now;
+       }
++      if (now - g_last_hello >= kHelloEvery) {
++        SendHellosAndPeers();
++        g_last_hello = now;
++      }
++      for (auto it = g_peers.begin(); it != g_peers.end();) {
++        it = now - it->second.heard > kPeerForgetAfter ? g_peers.erase(it) : std::next(it);
++      }
+       for (auto it = g_heard.begin(); it != g_heard.end();) {
+         it = now - it->second.heard > kForgetAfter ? g_heard.erase(it) : std::next(it);
+       }
+     }
++    if (party_changed) NotifyPartyChanged(others);
+     fd_set read_set;
+     FD_ZERO(&read_set);
+     FD_SET(g_socket, &read_set);
+@@ -260,7 +537,7 @@ void Run() {
+     const int got = int(recvfrom(g_socket, reinterpret_cast<char*>(packet), sizeof(packet), 0,
+                                  reinterpret_cast<sockaddr*>(&from), &from_len));
+     if (got > 0) {
+-      Receive(packet, size_t(got), from.sin_addr.s_addr);
++      Receive(packet, size_t(got), from.sin_addr.s_addr, from.sin_port);
+     }
+   }
+ }
+@@ -323,6 +600,12 @@ void HostCreated(uint32_t session, const uint8_t* info, uint32_t flags, uint32_t
+   if (!system_link::Live() || !info) return;
+   Start();
+   std::lock_guard lock(g_mutex);
++  g_invite_object = session;
++  g_invite = Session{};
++  std::memcpy(g_invite.info.data(), info, kInfoSize);
++  g_invite.flags = flags;
++  g_invite.public_slots = public_slots;
++  g_invite.private_slots = private_slots;
+   g_hosted_object = session;
+   g_hosted = Session{};
+   std::memcpy(g_hosted.info.data(), info, kInfoSize);
+@@ -351,20 +634,32 @@ void HostModified(uint32_t session, uint32_t flags, uint32_t public_slots,
+   g_hosted.private_slots = private_slots;
+ }
+ 
++// Players in the invite session: public slots first, then private ones.
++void CountInviteMembers(uint32_t session, int32_t change) {
++  if (!g_invite_object || session != g_invite_object) return;
++  const uint32_t total = uint32_t(std::max<int32_t>(
++      0, int32_t(g_invite.filled_public + g_invite.filled_private) + change));
++  g_invite.filled_public = std::min(total, g_invite.public_slots);
++  g_invite.filled_private = std::min(total - g_invite.filled_public, g_invite.private_slots);
++}
++
+ void MembersJoined(uint32_t session, uint32_t count) {
+   std::lock_guard lock(g_mutex);
++  CountInviteMembers(session, int32_t(count));
+   if (!g_hosted_object || session != g_hosted_object) return;
+   g_hosted.filled_public = std::min(g_hosted.public_slots, g_hosted.filled_public + count);
+ }
+ 
+ void MembersLeft(uint32_t session, uint32_t count) {
+   std::lock_guard lock(g_mutex);
++  CountInviteMembers(session, -int32_t(count));
+   if (!g_hosted_object || session != g_hosted_object) return;
+   g_hosted.filled_public = g_hosted.filled_public > count ? g_hosted.filled_public - count : 0;
+ }
+ 
+ void HostDeleted(uint32_t session) {
+   std::lock_guard lock(g_mutex);
++  if (session == g_invite_object) g_invite_object = 0;
+   if (!g_hosted_object || session != g_hosted_object) return;
+   SendToLan(HostedPacket(kGone));
+   g_hosted_object = 0;
+@@ -387,6 +682,13 @@ uint32_t WriteSearchResults(uint8_t* buffer, uint32_t guest_address, uint32_t si
+       }
+       found.push_back(session);
+     }
++    // A search for the session we were invited to (often a private one,
++    // never announced).
++    const uint64_t invited = KeyOf(g_invited_session.info.data());
++    if (g_invited && session_ids && g_heard.find(invited) == g_heard.end() &&
++        std::find(session_ids->begin(), session_ids->end(), invited) != session_ids->end()) {
++      found.push_back(g_invited_session);
++    }
+   }
+   // Fullest first (a lobby waiting for players), as matchmaking would.
+   std::stable_sort(found.begin(), found.end(), [](const Session& a, const Session& b) {
+@@ -457,4 +759,66 @@ uint32_t WriteSearchResults(uint8_t* buffer, uint32_t guest_address, uint32_t si
+   return count;
+ }
+ 
++std::vector<PartyMember> PartyMembers() {
++  std::vector<PartyMember> members;
++  if (!system_link::Live()) return members;
++  std::lock_guard lock(g_mutex);
++  if (g_members.empty()) return members;
++  PartyMember self;
++  self.xuid = system_link::PlayerXuid();
++  self.name = system_link::PlayerName();
++  self.custom = g_custom;
++  self.local = true;
++  members.push_back(self);
++  for (const auto& [xuid, member] : g_members) {
++    PartyMember other;
++    other.xuid = xuid;
++    other.name = member.name.data();
++    other.custom = member.custom;
++    members.push_back(other);
++  }
++  std::sort(members.begin(), members.end(),
++            [](const PartyMember& a, const PartyMember& b) { return a.xuid < b.xuid; });
++  return members;
++}
++
++void SetPartyCustomData(const uint8_t* data) {
++  if (!system_link::Live() || !data) return;
++  std::lock_guard lock(g_mutex);
++  if (std::memcmp(g_custom.data(), data, g_custom.size()) == 0) return;
++  std::memcpy(g_custom.data(), data, g_custom.size());
++  SendMember();
++  g_party_changed = true;
++}
++
++bool SendPartyGameInvites() {
++  if (!system_link::Live()) return false;
++  std::lock_guard lock(g_mutex);
++  if (!g_invite_object) return false;
++  std::vector<uint8_t> out = Header(kInvite, 0);
++  Put64(out, system_link::PlayerXuid());
++  PutSession(out, g_invite);
++  SendToLan(out);
++  if (system_link::Logging()) {
++    REXSYS_INFO("lan sessions: invited the party ({} other member(s))", g_members.size());
++  }
++  return true;
++}
++
++bool AcceptedInvite(uint8_t* info) {
++  std::lock_guard lock(g_mutex);
++  if (!g_invited || !info) return false;
++  // XINVITE_INFO: invitee XUID, inviter XUID, title ID, XSESSION_INFO, from a game invite.
++  std::memset(info, 0, 84);
++  const uint64_t self = system_link::PlayerXuid();
++  for (int i = 0; i < 8; ++i) {
++    info[i] = uint8_t(self >> (56 - 8 * i));
++    info[8 + i] = uint8_t(g_inviter >> (56 - 8 * i));
++  }
++  if (auto* kernel = REX_KERNEL_STATE()) Store32(info + 16, kernel->title_id());
++  std::memcpy(info + 20, g_invited_session.info.data(), kInfoSize);
++  Store32(info + 80, 1);
++  return true;
++}
++
+ }  // namespace rex::system::lan_sessions
+diff --git a/src/system/system_link.cpp b/src/system/system_link.cpp
+index 910f04d..544a487 100644
+--- a/src/system/system_link.cpp
++++ b/src/system/system_link.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <algorithm>
+ #include <cstring>
++#include <map>
+ #include <mutex>
+ #include <random>
+ #include <sstream>
+@@ -47,6 +48,9 @@ REXCVAR_DEFINE_BOOL(net_log, false, "Network", "Log the title's network calls");
+ REXCVAR_DEFINE_BOOL(lan_live, false, "Network",
+                     "Experimental: act as signed in to Xbox Live (implies system_link), for the "
+                     "title's online modes on the local network");
++REXCVAR_DEFINE_STRING(live_host, "", "Network",
++                      "lan_live over the internet: the address (IPv4 or name) of the PC hosting "
++                      "the lobby. Empty on the hosting PC");
+ 
+ namespace rex::system::system_link {
+ 
+@@ -121,6 +125,9 @@ uint64_t Fnv(const std::string& text) {
+ 
+ std::mutex g_random_mutex;
+ 
++std::mutex g_route_mutex;
++std::map<uint32_t, uint32_t> g_routes;  // identity -> reach
++
+ }  // namespace
+ 
+ uint32_t LocalAddress() {
+@@ -146,6 +153,85 @@ uint32_t BindAddress() {
+   return REXCVAR_GET(lan_address).empty() ? htonl(INADDR_ANY) : LocalAddress();
+ }
+ 
++uint32_t LiveHost() {
++  static const uint32_t address = [] {
++    std::string name = REXCVAR_GET(live_host);
++    name.erase(0, name.find_first_not_of(" \t"));
++    name.erase(name.find_last_not_of(" \t") + 1);
++    if (name.empty() || !Live()) {
++      return 0u;
++    }
++#if REX_PLATFORM_WIN32
++    WSADATA wsa;
++    WSAStartup(MAKEWORD(2, 2), &wsa);
++#endif
++    uint32_t found = Parse(name);
++    if (!found) {
++      addrinfo hints{};
++      hints.ai_family = AF_INET;
++      hints.ai_socktype = SOCK_DGRAM;
++      addrinfo* results = nullptr;
++      if (getaddrinfo(name.c_str(), nullptr, &hints, &results) == 0 && results) {
++        found = reinterpret_cast<sockaddr_in*>(results->ai_addr)->sin_addr.s_addr;
++        freeaddrinfo(results);
++      }
++    }
++    if (found) {
++      REXSYS_INFO("system link: Xbox LIVE host is {} ({})", Dotted(found), name);
++    } else {
++      REXSYS_WARN("system link: live_host '{}' not found", name);
++    }
++    return found;
++  }();
++  return address;
++}
++
++uint32_t IdentityAddress() {
++  static const uint32_t address = [] {
++    if (!LiveHost()) {
++      return LocalAddress();
++    }
++    char computer[256] = {};
++    gethostname(computer, sizeof(computer) - 1);
++    const uint64_t h = Fnv(std::string(computer) + "/" + REXCVAR_GET(player_name) + "/" +
++                           Dotted(LocalAddress()));
++    // 10.x.y.z, z never 0 or 255.
++    const uint32_t made_up =
++        htonl(0x0A000000u | uint32_t(h & 0xFFFF00) | (1 + uint32_t(h >> 32) % 254));
++    REXSYS_INFO("system link: this console is {} to the other players", Dotted(made_up));
++    return made_up;
++  }();
++  return address;
++}
++
++void SetRoute(uint32_t identity, uint32_t reach) {
++  if (!identity || !reach || identity == reach) {
++    return;
++  }
++  std::lock_guard lock(g_route_mutex);
++  auto& route = g_routes[identity];
++  if (route != reach) {
++    route = reach;
++    REXSYS_INFO("system link: {} is reached at {}", Dotted(identity), Dotted(reach));
++  }
++}
++
++uint32_t RouteTo(uint32_t identity) {
++  std::lock_guard lock(g_route_mutex);
++  const auto it = g_routes.find(identity);
++  return it == g_routes.end() ? identity : it->second;
++}
++
++uint32_t IdentityAt(uint32_t reach) {
++  std::lock_guard lock(g_route_mutex);
++  for (const auto& [identity, route] : g_routes) {
++    if (route == reach) {
++      return identity;
++    }
++  }
++  return reach;
++}
++
+ void FillIdentity(uint32_t address, uint8_t enet[6], uint8_t online[20]) {
+   const uint8_t* ip = reinterpret_cast<const uint8_t*>(&address);
+   enet[0] = 0x02;  // locally administered
+@@ -263,7 +349,7 @@ std::string PlayerName() {
+ uint64_t PlayerXuid() {
+   // An offline XUID (0xE0...), distinct per address and name. Bits 54-55 stay
+   // clear: some titles refuse a XUID with them set.
+-  const uint64_t body = Fnv(Dotted(LocalAddress()) + "/" + PlayerName()) & 0x0000FFFFFFFFFFFFull;
++  const uint64_t body = Fnv(Dotted(IdentityAddress()) + "/" + PlayerName()) & 0x0000FFFFFFFFFFFFull;
+   // Signed in to Live: an online XUID (0x0009...) instead.
+   return (Live() ? 0x0009000000000000ull : 0xE000000000000000ull) | body;
+ }
+@@ -286,7 +372,7 @@ void FillHostSessionInfo(uint8_t* info, uint8_t* nonce, bool live_session) {
+     // XNADDR: ina, inaOnline, wPortOnline (big-endian), abEnet, abOnline.
+     uint8_t* host = info + 8;
+     std::memset(host, 0, 36);
+-    const uint32_t address = LocalAddress();
++    const uint32_t address = IdentityAddress();
+     std::memcpy(host + 0, &address, 4);
+     FillIdentity(address, host + 10, host + 16);
+     // XNKEY.

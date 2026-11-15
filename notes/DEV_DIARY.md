@@ -950,13 +950,30 @@ SDK patch 0008 (`lan_live`) runs the game's Player Match on the LAN.
 **Results** (2026-10-30): two copies on one PC, Custom Match on one, Quick Match on the other:
 found, connected and played, no errors.
 
-**Xbox LIVE Party Lobby** (the only mode with observer slots) does nothing after its rules
-screen. The game resolves Xbox Live party functions by ordinal at boot (`sub_824C8E30`, table at
-`0x839F6574`: `XamPartyGetUserList` 0xAFF, `XamPartySendGameInvites` 0xB00,
-`XamPartySetCustomData` 0xB0B, `XamPartyGetBandwidth` 0xB10, `XamShowPartyUI` 0x305,
-`XamShowCommunitySessionsUI` 0x30B) and reads the party on `XN_PARTY_MEMBERS_CHANGED`
-(0x0E040002, `sub_82115048`, a 3,848-byte list). The SDK reports no party (0x807D0003). Next:
-emulate one party made of every console on the LAN, with game invites carried over the LAN.
+**Xbox LIVE Party Lobby** (the only mode with observer slots, SDK patch 0009). The game resolves
+Xbox Live party functions by ordinal at boot (`sub_824C8E30`, table at `0x839F6574`:
+`XamPartyGetUserList` 0xAFF, `XamPartySendGameInvites` 0xB00, `XamPartySetCustomData` 0xB0B,
+`XamPartyGetBandwidth` 0xB10, `XamShowPartyUI` 0x305, `XamShowCommunitySessionsUI` 0x30B) and
+reads the party on `XN_PARTY_MEMBERS_CHANGED` (0x0E040002, `sub_82115048`) into `0x829B32D0`: an
+`XPARTY_USER_LIST` of a count and 32 entries of 120 bytes (XUID 0, gamertag 8, user index 24, NAT
+type 28, title ID 32, flags 36 with bit 0 = local, `XSESSION_INFO` 40, `XPARTY_CUSTOM_DATA` 104).
+The lobby's state machine (`sub_8212B8C8`, state at `+5184`) needs at least two members, puts its
+state in custom data byte 0 (`XamPartySetCustomData(1, user, data)`), and START sends
+`XamPartySendGameInvites(1, user, 0, overlapped)`. The other consoles get the invite through
+`XN_LIVE_INVITE_ACCEPTED` and `XInviteGetAcceptedInfo` (XMsg 0xFC/0x58023, whose second argument
+is an argument list of 16-byte entries; the second entry points to the `XINVITE_INFO`), then look
+the session up with `XSessionSearchByID` (20-byte buffer: user index, XNKID, size, results; the
+SDK's old layout read half of the XNKID as a pointer and crashed) and join it.
+
+The SDK makes one party of every console heard on the directory port (LAN or through the
+internet host), and accepts invites at once.
+
+**Results** (2026-11-15): three copies on one PC (host, two joiners through `live_host`): the
+host's Party Lobby (Observer 1) listed the party, START pulled both joiners in from the main
+menu, Host vs JoinerA played two rounds and JoinerB watched it live. After the match the observer
+went back to the Player Match menu. With three copies on one PC the fighters slow to about 40 fps
+whenever neither fighter's window has focus (also with the third copy offline in Training), so
+test with a fighter in front.
 
 ---
 

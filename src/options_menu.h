@@ -18,8 +18,7 @@ namespace oratan {
 class OptionsDialog : public rex::ui::ImGuiDialog {
  public:
   // `restart` relaunches the game (with the command line changed by its
-  // argument); offered when a setting needs a restart, and to start or leave
-  // netplay.
+  // argument); offered when a setting needs a restart.
   OptionsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
                 std::function<void(const RelaunchArgs&)> restart);
 
@@ -28,7 +27,7 @@ class OptionsDialog : public rex::ui::ImGuiDialog {
 
  private:
   void Save();
-  void DrawNetplay();
+  void DrawOnline();
   // "Restart the game to apply", with a button that does.
   void RestartNotice();
 
